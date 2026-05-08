@@ -1,0 +1,664 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>MainWindow</class>
+ <widget class="QMainWindow" name="MainWindow">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>1200</width>
+    <height>800</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>编辑器</string>
+  </property>
+  <widget class="QSplitter" name="centralwidget">
+   <property name="styleSheet">
+    <string>QSplitter::handle { background-color: #444444; }</string>
+   </property>
+   <property name="orientation">
+    <enum>Qt::Orientation::Vertical</enum>
+   </property>
+   <property name="handleWidth">
+    <number>4</number>
+   </property>
+   <property name="childrenCollapsible">
+    <bool>false</bool>
+   </property>
+   <widget class="QSplitter" name="topPanel">
+    <property name="styleSheet">
+     <string>QSplitter::handle { background-color: #444444; }</string>
+    </property>
+    <property name="orientation">
+     <enum>Qt::Orientation::Horizontal</enum>
+    </property>
+    <property name="handleWidth">
+     <number>4</number>
+    </property>
+    <property name="childrenCollapsible">
+     <bool>false</bool>
+    </property>
+    <widget class="QWidget" name="activityBar">
+     <property name="minimumSize">
+      <size>
+       <width>40</width>
+       <height>0</height>
+      </size>
+     </property>
+     <property name="maximumSize">
+      <size>
+       <width>40</width>
+       <height>16777215</height>
+      </size>
+     </property>
+     <property name="styleSheet">
+      <string>background-color: #333333;</string>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayoutActivity">
+      <property name="spacing">
+       <number>0</number>
+      </property>
+      <property name="leftMargin">
+       <number>0</number>
+      </property>
+      <property name="topMargin">
+       <number>0</number>
+      </property>
+      <property name="rightMargin">
+       <number>0</number>
+      </property>
+      <property name="bottomMargin">
+       <number>0</number>
+      </property>
+      <item>
+       <widget class="QToolButton" name="btnAndroid">
+        <property name="minimumSize">
+         <size>
+          <width>40</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="toolTip">
+         <string>Android 连接</string>
+        </property>
+        <property name="styleSheet">
+         <string>QToolButton { border: none; color: #cccccc; font-size: 18px; }
+QToolButton:hover { background-color: #505050; }
+QToolButton:checked { background-color: #505050; border-left: 3px solid #007acc; }</string>
+        </property>
+        <property name="text">
+         <string>📱</string>
+        </property>
+        <property name="checkable">
+         <bool>true</bool>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QToolButton" name="btnSearch">
+        <property name="minimumSize">
+         <size>
+          <width>40</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="toolTip">
+         <string>搜索</string>
+        </property>
+        <property name="styleSheet">
+         <string>QToolButton { border: none; color: #cccccc; font-size: 18px; }
+QToolButton:hover { background-color: #505050; }
+QToolButton:checked { background-color: #505050; border-left: 3px solid #007acc; }</string>
+        </property>
+        <property name="text">
+         <string>🔍</string>
+        </property>
+        <property name="checkable">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QToolButton" name="btnGit">
+        <property name="minimumSize">
+         <size>
+          <width>40</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="toolTip">
+         <string>源代码管理</string>
+        </property>
+        <property name="styleSheet">
+         <string>QToolButton { border: none; color: #cccccc; font-size: 18px; }
+QToolButton:hover { background-color: #505050; }
+QToolButton:checked { background-color: #505050; border-left: 3px solid #007acc; }</string>
+        </property>
+        <property name="text">
+         <string>🌿</string>
+        </property>
+        <property name="checkable">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QToolButton" name="btnRun">
+        <property name="minimumSize">
+         <size>
+          <width>40</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="toolTip">
+         <string>运行和调试</string>
+        </property>
+        <property name="styleSheet">
+         <string>QToolButton { border: none; color: #cccccc; font-size: 18px; }
+QToolButton:hover { background-color: #505050; }
+QToolButton:checked { background-color: #505050; border-left: 3px solid #007acc; }</string>
+        </property>
+        <property name="text">
+         <string>▶</string>
+        </property>
+        <property name="checkable">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QToolButton" name="btnExt">
+        <property name="minimumSize">
+         <size>
+          <width>40</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="toolTip">
+         <string>扩展</string>
+        </property>
+        <property name="styleSheet">
+         <string>QToolButton { border: none; color: #cccccc; font-size: 18px; }
+QToolButton:hover { background-color: #505050; }
+QToolButton:checked { background-color: #505050; border-left: 3px solid #007acc; }</string>
+        </property>
+        <property name="text">
+         <string>🧩</string>
+        </property>
+        <property name="checkable">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <spacer name="spacerActivity">
+        <property name="orientation">
+         <enum>Qt::Orientation::Vertical</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+         <size>
+          <width>0</width>
+          <height>0</height>
+         </size>
+        </property>
+       </spacer>
+      </item>
+      <item>
+       <widget class="QToolButton" name="btnAccount">
+        <property name="minimumSize">
+         <size>
+          <width>40</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="toolTip">
+         <string>帐户</string>
+        </property>
+        <property name="styleSheet">
+         <string>QToolButton { border: none; color: #cccccc; font-size: 18px; }
+QToolButton:hover { background-color: #505050; }</string>
+        </property>
+        <property name="text">
+         <string>👤</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QToolButton" name="btnSettings">
+        <property name="minimumSize">
+         <size>
+          <width>40</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>40</width>
+          <height>50</height>
+         </size>
+        </property>
+        <property name="toolTip">
+         <string>管理</string>
+        </property>
+        <property name="styleSheet">
+         <string>QToolButton { border: none; color: #cccccc; font-size: 18px; }
+QToolButton:hover { background-color: #505050; }</string>
+        </property>
+        <property name="text">
+         <string>⚙</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+    <widget class="QWidget" name="sidePanel">
+     <property name="minimumSize">
+      <size>
+       <width>260</width>
+       <height>0</height>
+      </size>
+     </property>
+     <property name="styleSheet">
+      <string>background-color: #252526; color: #cccccc;</string>
+     </property>
+     <layout class="QVBoxLayout" name="verticalLayoutSide">
+      <property name="spacing">
+       <number>0</number>
+      </property>
+      <property name="leftMargin">
+       <number>0</number>
+      </property>
+      <property name="topMargin">
+       <number>0</number>
+      </property>
+      <property name="rightMargin">
+       <number>0</number>
+      </property>
+      <property name="bottomMargin">
+       <number>0</number>
+      </property>
+      <item>
+       <widget class="QTabWidget" name="tabConnect">
+        <property name="tabsClosable">
+         <bool>false</bool>
+        </property>
+        <widget class="QWidget" name="tabWifi">
+         <attribute name="title">
+          <string>WiFi</string>
+         </attribute>
+         <layout class="QVBoxLayout" name="verticalLayoutWifi">
+          <property name="spacing">
+           <number>8</number>
+          </property>
+          <property name="leftMargin">
+           <number>10</number>
+          </property>
+          <property name="topMargin">
+           <number>10</number>
+          </property>
+          <property name="rightMargin">
+           <number>10</number>
+          </property>
+          <property name="bottomMargin">
+           <number>10</number>
+          </property>
+          <item>
+           <widget class="QLabel" name="lblIp">
+            <property name="text">
+             <string>IP 地址</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="editIp">
+            <property name="styleSheet">
+             <string>QLineEdit { background-color: #3c3c3c; color: #cccccc; border: 1px solid #555555; padding: 4px; }</string>
+            </property>
+            <property name="placeholderText">
+             <string>192.168.1.100</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="lblPort">
+            <property name="text">
+             <string>端口</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="editPort">
+            <property name="styleSheet">
+             <string>QLineEdit { background-color: #3c3c3c; color: #cccccc; border: 1px solid #555555; padding: 4px; }</string>
+            </property>
+            <property name="text">
+             <string>5555</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="btnAutoIp">
+            <property name="styleSheet">
+             <string>QPushButton { background-color: #3c3c3c; color: #cccccc; border: 1px solid #555555; padding: 6px; }
+QPushButton:hover { background-color: #505050; }</string>
+            </property>
+            <property name="text">
+             <string>自动获取 IP</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="btnIpConnect">
+            <property name="styleSheet">
+             <string>QPushButton { background-color: #0e639c; color: white; border: none; padding: 6px; }
+QPushButton:hover { background-color: #1177bb; }</string>
+            </property>
+            <property name="text">
+             <string>IP 连接</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer name="spacerWifi">
+            <property name="orientation">
+             <enum>Qt::Orientation::Vertical</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>0</width>
+              <height>0</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+         </layout>
+        </widget>
+        <widget class="QWidget" name="tabAdb">
+         <attribute name="title">
+          <string>ADB</string>
+         </attribute>
+         <layout class="QVBoxLayout" name="verticalLayoutAdb">
+          <property name="spacing">
+           <number>8</number>
+          </property>
+          <property name="leftMargin">
+           <number>10</number>
+          </property>
+          <property name="topMargin">
+           <number>10</number>
+          </property>
+          <property name="rightMargin">
+           <number>10</number>
+          </property>
+          <property name="bottomMargin">
+           <number>10</number>
+          </property>
+          <item>
+           <widget class="QPushButton" name="btnRefreshAdb">
+            <property name="styleSheet">
+             <string>QPushButton { background-color: #3c3c3c; color: #cccccc; border: 1px solid #555555; padding: 6px; }
+QPushButton:hover { background-color: #505050; }</string>
+            </property>
+            <property name="text">
+             <string>刷新设备</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QListWidget" name="listAdbDevices">
+            <property name="minimumSize">
+             <size>
+              <width>0</width>
+              <height>120</height>
+             </size>
+            </property>
+            <property name="styleSheet">
+             <string>QListWidget { background-color: #3c3c3c; color: #cccccc; border: 1px solid #555555; padding: 4px; }
+QListWidget::item { padding: 6px; }
+QListWidget::item:selected { background-color: #0e639c; color: white; }
+QListWidget::item:hover { background-color: #2a2d2e; }</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="btnAdbConnect">
+            <property name="styleSheet">
+             <string>QPushButton { background-color: #0e639c; color: white; border: none; padding: 6px; }
+QPushButton:hover { background-color: #1177bb; }</string>
+            </property>
+            <property name="text">
+             <string>连接选中设备</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <spacer name="spacerAdb">
+            <property name="orientation">
+             <enum>Qt::Orientation::Vertical</enum>
+            </property>
+            <property name="sizeHint" stdset="0">
+             <size>
+              <width>0</width>
+              <height>0</height>
+             </size>
+            </property>
+           </spacer>
+          </item>
+         </layout>
+        </widget>
+       </widget>
+      </item>
+      <item>
+       <widget class="QLabel" name="lblStatus">
+        <property name="styleSheet">
+         <string>color: #888888; padding: 5px 10px;</string>
+        </property>
+        <property name="text">
+         <string>状态: 未连接</string>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+    <widget class="QTabWidget" name="tabWidget">
+     <property name="tabsClosable">
+      <bool>true</bool>
+     </property>
+     <property name="movable">
+      <bool>true</bool>
+     </property>
+     <widget class="QWidget" name="tab">
+      <attribute name="title">
+       <string>投屏</string>
+      </attribute>
+      <layout class="QVBoxLayout" name="tabLayout">
+       <property name="spacing">
+        <number>0</number>
+       </property>
+       <property name="leftMargin">
+        <number>0</number>
+       </property>
+       <property name="topMargin">
+        <number>0</number>
+       </property>
+       <property name="rightMargin">
+        <number>0</number>
+       </property>
+       <property name="bottomMargin">
+        <number>0</number>
+       </property>
+       <item>
+        <widget class="QWidget" name="videoWidget">
+         <property name="styleSheet">
+          <string>background-color: #000000;</string>
+         </property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </widget>
+   <widget class="QWidget" name="outputPanel">
+    <property name="minimumSize">
+     <size>
+      <width>0</width>
+      <height>80</height>
+     </size>
+    </property>
+    <property name="styleSheet">
+     <string>background-color: #252526;</string>
+    </property>
+    <layout class="QVBoxLayout" name="verticalLayoutOutput">
+     <property name="spacing">
+      <number>5</number>
+     </property>
+     <property name="leftMargin">
+      <number>5</number>
+     </property>
+     <property name="topMargin">
+      <number>5</number>
+     </property>
+     <property name="rightMargin">
+      <number>5</number>
+     </property>
+     <property name="bottomMargin">
+      <number>5</number>
+     </property>
+     <item>
+      <layout class="QHBoxLayout" name="horizontalLayoutOutput">
+       <item>
+        <widget class="QPushButton" name="btnClear">
+         <property name="text">
+          <string>清除</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="spacerOutput">
+         <property name="orientation">
+          <enum>Qt::Orientation::Horizontal</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>0</width>
+           <height>0</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+     <item>
+      <widget class="QTextEdit" name="textOutput">
+       <property name="styleSheet">
+        <string>QTextEdit { background-color: #1e1e1e; color: #d4d4d4; border: none; }</string>
+       </property>
+       <property name="readOnly">
+        <bool>true</bool>
+       </property>
+       <property name="plainText">
+        <string>系统启动成功</string>
+       </property>
+       <property name="placeholderText">
+        <string>输出日志...</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </widget>
+  </widget>
+  <widget class="QMenuBar" name="menubar">
+   <property name="geometry">
+    <rect>
+     <x>0</x>
+     <y>0</y>
+     <width>1200</width>
+     <height>33</height>
+    </rect>
+   </property>
+   <widget class="QMenu" name="menuFile">
+    <property name="title">
+     <string>文件(&amp;F)</string>
+    </property>
+    <addaction name="actionNew"/>
+    <addaction name="actionOpen"/>
+    <addaction name="separator"/>
+    <addaction name="actionSave"/>
+    <addaction name="separator"/>
+    <addaction name="actionExit"/>
+   </widget>
+   <addaction name="menuFile"/>
+  </widget>
+  <action name="actionNew">
+   <property name="text">
+    <string>新建(&amp;N)</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+N</string>
+   </property>
+  </action>
+  <action name="actionOpen">
+   <property name="text">
+    <string>打开(&amp;O)</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+O</string>
+   </property>
+  </action>
+  <action name="actionSave">
+   <property name="text">
+    <string>保存(&amp;S)</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+S</string>
+   </property>
+  </action>
+  <action name="actionExit">
+   <property name="text">
+    <string>退出(&amp;X)</string>
+   </property>
+  </action>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>
