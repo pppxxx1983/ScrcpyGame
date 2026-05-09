@@ -9,9 +9,14 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from llm_client import QwenVLClient
+
 
 DEFAULT_DB = Path("screenshots") / "scene_index.sqlite"
 OLLAMA_URL = "http://127.0.0.1:11434/api/chat"
+
+# 全局视觉模型客户端（qwen-vl-max）
+_qwen_client = QwenVLClient()
 
 
 def _bits_to_hex(bits: np.ndarray) -> str:
@@ -120,7 +125,8 @@ class SceneIndex:
                 "model": None,
             }
 
-        description = describe_image_with_ollama(image_path, describe_model)
+        # 暂时跳过视觉描述（ollama/qwen-vl-max），避免网络阻塞和 CPU 占用
+        description = ""
         scene_id = self._insert_scene(image_path, fp, description)
         return {
             "matched": False,
@@ -130,7 +136,7 @@ class SceneIndex:
             "scene_key": fp["dhash"],
             "description": description,
             "distance": best["distance"] if best else None,
-            "model": describe_model,
+            "model": None,
         }
 
     def _record_hit(self, scene_id: int):
@@ -165,6 +171,14 @@ class SceneIndex:
                 ),
             )
             return int(cur.lastrowid)
+
+
+def describe_image_with_qwen(image_path: Path, model: str = "qwen-vl-max") -> str:
+    """使用 qwen-vl-max 解读画面（优先），若未配置 key 则 fallback 到 ollama。"""
+    if _qwen_client.is_ready():
+        return _qwen_client.describe_image(image_path)
+    # fallback: ollama
+    return describe_image_with_ollama(image_path, model="qwen3-vl:2b")
 
 
 def describe_image_with_ollama(image_path: Path, model: str = "qwen3-vl:2b") -> str:

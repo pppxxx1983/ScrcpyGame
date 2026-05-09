@@ -9,8 +9,8 @@ from pathlib import Path
 import scrcpy
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QSplitter, QButtonGroup, QToolButton,
-    QPushButton, QLabel, QLineEdit, QListWidget, QListWidgetItem, QVBoxLayout,
-    QHBoxLayout, QTextEdit, QSizePolicy
+    QPushButton, QLabel, QLineEdit, QListWidget, QListWidgetItem, QTreeWidget,
+    QTreeWidgetItem, QVBoxLayout, QHBoxLayout, QTextEdit, QSizePolicy
 )
 from PySide6.QtCore import QTimer, QObject, Signal, Qt
 from PySide6.QtGui import QPixmap, QPainter, QPen, QColor, QFont
@@ -18,11 +18,14 @@ from PySide6.QtGui import QPixmap, QPainter, QPen, QColor, QFont
 from ui_main_window import Ui_MainWindow
 from video_widget import VideoGLWidget
 from log_manager import LogManager
+from decision_engine import DecisionEngine
+from execution_engine import ExecutionEngine
 
 
 class SignalBridge(QObject):
     status_changed = Signal(str, str)
     buttons_changed = Signal(bool)
+    decision_ready = Signal(dict)
 
 
 class AnnotatedImageLabel(QLabel):
@@ -165,6 +168,25 @@ class MainWindow(QMainWindow):
         self._touch_time = 0.0
         self._op_dir_for_touch = None
         self._screenshot_lock = threading.Lock()
+
+        # 自动化决策引擎
+        self.decision_engine = DecisionEngine()
+        self.decision_panel = None
+        self.edit_goal = None
+        self.lbl_decision_result = None
+        self.btn_auto_run = None
+        self._auto_timer = QTimer(self)
+        self._auto_timer.timeout.connect(self.do_auto_step)
+
+        # 执行引擎（不阻塞主界面）
+        self.execution_engine = ExecutionEngine()
+        self.execution_engine.status_changed.connect(self._update_status_ui)
+        self.execution_engine.task_added.connect(self._on_task_added)
+        self.execution_engine.task_subtask_added.connect(self._on_task_subtask_added)
+        self.execution_engine.task_cleared.connect(self._on_task_cleared)
+        self.execution_engine.task_done.connect(self._on_task_done)
+        self.execution_engine.scene_image_ready.connect(self._show_scene_image)
+
         # 把 .ui 里的 videoWidget 替换为 VideoGLWidget
         old_widget = self.findChild(QWidget, "videoWidget")
         self.video_widget = None
@@ -190,6 +212,7 @@ class MainWindow(QMainWindow):
         self._bridge = SignalBridge(self)
         self._bridge.status_changed.connect(self._update_status_ui)
         self._bridge.buttons_changed.connect(self._update_connect_buttons_slot)
+        self._bridge.decision_ready.connect(self._execute_decision_slot)
 
         # 设置 splitter 比例
         splitter = self.findChild(QSplitter, "centralwidget")
@@ -217,17 +240,30 @@ class MainWindow(QMainWindow):
         self.side_panel = self.findChild(QWidget, "sidePanel")
         self.file_panel = None
         self.list_screenshot_folders = None
+        self.execution_panel = None
         self._setup_file_panel()
+        self._setup_decision_panel()
+        self._setup_execution_panel()
+
+        # 修改 btnGit 为"执行"
+        btn_git = self.findChild(QToolButton, "btnGit")
+        if btn_git:
+            btn_git.setText("▶")
+            btn_git.setToolTip("执行")
 
         def on_activity_clicked(btn):
             if not self.side_panel:
                 return
             name = btn.objectName()
-            self.side_panel.setVisible(name in ("btnAndroid", "btnSearch"))
+            self.side_panel.setVisible(name in ("btnAndroid", "btnSearch", "btnRun", "btnGit"))
             if self.ui.tabConnect:
                 self.ui.tabConnect.setVisible(name == "btnAndroid")
             if self.file_panel:
                 self.file_panel.setVisible(name == "btnSearch")
+            if self.decision_panel:
+                self.decision_panel.setVisible(name == "btnRun")
+            if self.execution_panel:
+                self.execution_panel.setVisible(name == "btnGit")
             if name == "btnSearch":
                 self._refresh_screenshot_folders()
 
@@ -240,6 +276,10 @@ class MainWindow(QMainWindow):
             self.side_panel.setVisible(True)
         if self.file_panel:
             self.file_panel.setVisible(False)
+        if self.decision_panel:
+            self.decision_panel.setVisible(False)
+        if self.execution_panel:
+            self.execution_panel.setVisible(False)
 
         # UI 控件引用
         self.lbl_status = self.findChild(QLabel, "lblStatus")
@@ -271,6 +311,8 @@ class MainWindow(QMainWindow):
         self.log_timer = QTimer(self)
         self.log_timer.timeout.connect(self._flush_log)
         self.log_timer.start(50)
+
+        # 录制相关变量已迁移到 ExecutionEngine
 
         # 退出
         self.ui.actionExit.triggered.connect(self.close)
@@ -316,6 +358,303 @@ class MainWindow(QMainWindow):
         layout.insertWidget(1, self.file_panel)
         self.file_panel.setVisible(False)
         self._refresh_screenshot_folders()
+
+    def _setup_decision_panel(self):
+        if not self.side_panel:
+            return
+        layout = self.side_panel.layout()
+        if layout is None:
+            return
+
+        self.decision_panel = QWidget(self.side_panel)
+        self.decision_panel.setObjectName("decisionPanel")
+        panel_layout = QVBoxLayout(self.decision_panel)
+        panel_layout.setSpacing(8)
+        panel_layout.setContentsMargins(10, 10, 10, 10)
+
+        title = QLabel("自动化决策")
+        title.setStyleSheet("font-weight: bold; color: #cccccc; padding: 2px;")
+        panel_layout.addWidget(title)
+
+        self.edit_goal = QLineEdit(self.decision_panel)
+        self.edit_goal.setPlaceholderText("输入游戏目标，如：通过第一关")
+        self.edit_goal.setStyleSheet(
+            "QLineEdit { background-color: #3c3c3c; color: #cccccc; "
+            "border: 1px solid #555555; padding: 6px; }"
+        )
+        panel_layout.addWidget(self.edit_goal)
+
+        btn_step = QPushButton("执行一步", self.decision_panel)
+        btn_step.setStyleSheet(
+            "QPushButton { background-color: #0e639c; color: white; "
+            "border: 1px solid #555555; padding: 6px; }"
+            "QPushButton:hover { background-color: #1177bb; }"
+        )
+        btn_step.clicked.connect(self.do_auto_step)
+        panel_layout.addWidget(btn_step)
+
+        self.btn_auto_run = QPushButton("开始连续执行", self.decision_panel)
+        self.btn_auto_run.setCheckable(True)
+        self.btn_auto_run.setStyleSheet(
+            "QPushButton { background-color: #3c3c3c; color: #cccccc; "
+            "border: 1px solid #555555; padding: 6px; }"
+            "QPushButton:checked { background-color: #4ec9b0; color: #1e1e1e; }"
+            "QPushButton:hover { background-color: #505050; }"
+        )
+        self.btn_auto_run.clicked.connect(self._toggle_auto_run)
+        panel_layout.addWidget(self.btn_auto_run)
+
+        self.lbl_decision_result = QLabel("决策结果: 等待执行...", self.decision_panel)
+        self.lbl_decision_result.setWordWrap(True)
+        self.lbl_decision_result.setStyleSheet("color: #cccccc; padding: 4px;")
+        self.lbl_decision_result.setMinimumHeight(60)
+        panel_layout.addWidget(self.lbl_decision_result)
+
+        panel_layout.addStretch(1)
+        layout.insertWidget(2, self.decision_panel)
+        self.decision_panel.setVisible(False)
+
+    def _setup_execution_panel(self):
+        if not self.side_panel:
+            return
+        layout = self.side_panel.layout()
+        if layout is None:
+            return
+
+        self.execution_panel = QWidget(self.side_panel)
+        self.execution_panel.setObjectName("executionPanel")
+        panel_layout = QVBoxLayout(self.execution_panel)
+        panel_layout.setSpacing(8)
+        panel_layout.setContentsMargins(10, 10, 10, 10)
+
+        title = QLabel("任务执行")
+        title.setStyleSheet("font-weight: bold; color: #cccccc; padding: 2px;")
+        panel_layout.addWidget(title)
+
+        # 执行 / 停止 按钮行
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        self.btn_execute = QPushButton("▶ 执行", self.execution_panel)
+        self.btn_execute.setStyleSheet(
+            "QPushButton { background-color: #0e639c; color: white; "
+            "border: 1px solid #555555; padding: 6px; font-size: 14px; }"
+            "QPushButton:hover { background-color: #1177bb; }"
+            "QPushButton:disabled { background-color: #3c3c3c; color: #888888; }"
+        )
+        self.btn_execute.clicked.connect(self.do_start_execution)
+        btn_row.addWidget(self.btn_execute)
+
+        self.btn_stop_execution = QPushButton("⏹ 停止", self.execution_panel)
+        self.btn_stop_execution.setStyleSheet(
+            "QPushButton { background-color: #f44747; color: white; "
+            "border: 1px solid #555555; padding: 6px; font-size: 14px; }"
+            "QPushButton:hover { background-color: #ff5555; }"
+            "QPushButton:disabled { background-color: #3c3c3c; color: #888888; }"
+        )
+        self.btn_stop_execution.clicked.connect(self.do_stop_execution)
+        self.btn_stop_execution.setEnabled(False)
+        btn_row.addWidget(self.btn_stop_execution)
+
+        panel_layout.addLayout(btn_row)
+
+        # 任务队列
+        task_title = QLabel("任务队列")
+        task_title.setStyleSheet("font-weight: bold; color: #888888; padding: 4px;")
+        panel_layout.addWidget(task_title)
+
+        self.task_list = QTreeWidget(self.execution_panel)
+        self.task_list.setObjectName("taskList")
+        self.task_list.setHeaderHidden(True)
+        self.task_list.setIndentation(20)
+        self.task_list.setStyleSheet(
+            "QTreeWidget { background-color: #252526; color: #cccccc; "
+            "border: 1px solid #3c3c3c; padding: 4px; }"
+            "QTreeWidget::item { padding: 4px; border-bottom: 1px solid #333333; }"
+            "QTreeWidget::item:selected { background-color: #0e639c; color: white; }"
+            "QTreeWidget::item:hover { background-color: #2a2d2e; }"
+        )
+        # 任务队列初始为空，执行后动态添加
+        panel_layout.addWidget(self.task_list, 1)  # stretch=1 让列表占据剩余空间
+
+        layout.insertWidget(3, self.execution_panel)
+        self.execution_panel.setVisible(False)
+
+    # ------------------------------------------------------------------
+    # 执行引擎信号槽
+    # ------------------------------------------------------------------
+    def _on_task_added(self, text: str, pending: bool):
+        item = QTreeWidgetItem()
+        item.setText(0, text)
+        item.setData(0, 257, text)  # 存储 base_text 用于匹配
+        if pending:
+            item.setData(0, 256, "pending")
+            item.setIcon(0, self.style().standardIcon(self.style().StandardPixmap.SP_MessageBoxInformation))
+            self._start_task_timer(item, text)
+        else:
+            item.setData(0, 256, "done")
+            item.setIcon(0, self.style().standardIcon(self.style().StandardPixmap.SP_DialogApplyButton))
+        self.task_list.addTopLevelItem(item)
+
+    def _on_task_subtask_added(self, parent_text: str, sub_text: str):
+        """在指定父任务下添加子任务。"""
+        for i in range(self.task_list.topLevelItemCount()):
+            parent = self.task_list.topLevelItem(i)
+            if parent and parent.data(0, 257) == parent_text:
+                child = QTreeWidgetItem(parent)
+                child.setText(0, sub_text)
+                child.setData(0, 257, sub_text)
+                child.setData(0, 256, "pending")
+                child.setIcon(0, self.style().standardIcon(self.style().StandardPixmap.SP_MessageBoxInformation))
+                parent.setExpanded(True)
+                break
+
+    def _find_task_item(self, text: str):
+        """递归查找任务项（支持子节点）。"""
+        def _search(item):
+            if item.data(0, 257) == text:
+                return item
+            for i in range(item.childCount()):
+                result = _search(item.child(i))
+                if result:
+                    return result
+            return None
+
+        for i in range(self.task_list.topLevelItemCount()):
+            result = _search(self.task_list.topLevelItem(i))
+            if result:
+                return result
+        return None
+
+    def _start_task_timer(self, item, base_text: str):
+        """为任务项启动秒表计时器，每秒更新文本。"""
+        import time
+        if not hasattr(self, '_task_timers'):
+            self._task_timers = {}
+        start_time = time.time()
+        timer = QTimer(self)
+        timer.setInterval(1000)
+
+        def _tick():
+            elapsed = int(time.time() - start_time)
+            item.setText(0, f"{base_text} ({elapsed}s)")
+
+        timer.timeout.connect(_tick)
+        timer.start()
+        self._task_timers[id(item)] = timer
+
+    def _on_task_cleared(self):
+        self.task_list.clear()
+        if hasattr(self, '_task_timers'):
+            for timer in self._task_timers.values():
+                timer.stop()
+            self._task_timers.clear()
+
+    def _on_task_done(self, text: str, success: bool):
+        item = self._find_task_item(text)
+        if item is None:
+            return
+        item.setData(0, 256, "done")
+        # 停止计时器
+        if hasattr(self, '_task_timers') and id(item) in self._task_timers:
+            self._task_timers[id(item)].stop()
+            del self._task_timers[id(item)]
+        icon = (
+            self.style().standardIcon(
+                self.style().StandardPixmap.SP_DialogApplyButton
+            )
+            if success
+            else self.style().standardIcon(
+                self.style().StandardPixmap.SP_MessageBoxCritical
+            )
+        )
+        item.setIcon(0, icon)
+
+    def _draw_objects_on_pixmap(self, pixmap: QPixmap, objects: list) -> QPixmap:
+        """在图片上绘制对象 bbox 和标签。"""
+        if not objects:
+            return pixmap
+        annotated = QPixmap(pixmap)
+        painter = QPainter(annotated)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        w, h = pixmap.width(), pixmap.height()
+        colors = ["#ff4040", "#40d8ff", "#ffcc00", "#4ec9b0", "#ce9178", "#d670d6"]
+
+        for i, obj in enumerate(objects[:30]):  # 最多画 30 个
+            name = obj.get("name", "")
+            bbox = obj.get("bbox", [0, 0, 0, 0])
+            if len(bbox) != 4:
+                continue
+
+            x1, y1, x2, y2 = bbox
+            px1 = int(x1 / 1000 * w)
+            py1 = int(y1 / 1000 * h)
+            px2 = int(x2 / 1000 * w)
+            py2 = int(y2 / 1000 * h)
+
+            color = QColor(colors[i % len(colors)])
+            pen = QPen(color, 2)
+            painter.setPen(pen)
+            painter.drawRect(px1, py1, px2 - px1, py2 - py1)
+
+            # 标签背景
+            text = name[:12]
+            fm = painter.fontMetrics()
+            text_w = fm.horizontalAdvance(text) + 8
+            text_h = fm.height() + 4
+            painter.fillRect(px1, max(0, py1 - text_h), text_w, text_h, color)
+            painter.setPen(QColor("#ffffff"))
+            painter.setFont(QFont("Microsoft YaHei", 9))
+            painter.drawText(px1 + 4, max(0, py1 - 4), text)
+
+        painter.end()
+        return annotated
+
+    def _show_scene_image(self, title: str, image_path: Path, objects: list):
+        """创建新标签页显示场景截图，并标注大模型识别出的对象 bbox。"""
+        tab = QWidget()
+        tab.setStyleSheet("background-color: #1e1e1e;")
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        label = QLabel(tab)
+        pixmap = QPixmap(str(image_path))
+        if not pixmap.isNull():
+            # 如果有对象，绘制 bbox
+            if objects:
+                pixmap = self._draw_objects_on_pixmap(pixmap, objects)
+            label.setPixmap(
+                pixmap.scaled(
+                    960, 720,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(label)
+
+        index = self.ui.tabWidget.addTab(tab, title)
+        self.ui.tabWidget.setCurrentIndex(index)
+
+    def do_start_execution(self):
+        """开始执行：委托给 ExecutionEngine（全部在后台线程，不阻塞主界面）。"""
+        if not (self.client and self.client.alive):
+            self._set_status("状态: 请先连接设备")
+            return
+
+        self.btn_execute.setEnabled(False)
+        self.btn_stop_execution.setEnabled(True)
+
+        # 只传递 frame 引用（不复制），所有重活都在 ExecutionEngine 的后台线程中
+        frame = self.video_widget._frame if self.video_widget else None
+        self.execution_engine.start(frame)
+
+    def do_stop_execution(self):
+        """停止执行：委托给 ExecutionEngine。"""
+        self.execution_engine.stop()
+        self.btn_execute.setEnabled(True)
+        self.btn_stop_execution.setEnabled(False)
 
     def _refresh_screenshot_folders(self):
         if self.list_screenshot_folders is None:
@@ -481,6 +820,8 @@ class MainWindow(QMainWindow):
             self.btn_adb.setText("断开连接" if connected else "连接选中设备")
 
     def disconnect_device(self):
+        if self.execution_engine.is_running():
+            self.execution_engine.stop()
         if self.client:
             self.client.stop()
             self.client = None
@@ -579,6 +920,8 @@ class MainWindow(QMainWindow):
                 import numpy as np
                 rgb = np.ascontiguousarray(frame[..., ::-1])
                 self.video_widget.set_frame(rgb)
+                # 录制写入（委托给 ExecutionEngine）
+                self.execution_engine.write_frame(frame)
                 now = time.time()
                 if now - last_fps_time[0] >= 1.0:
                     fps = frame_count[0]
@@ -810,14 +1153,19 @@ class MainWindow(QMainWindow):
             before_path = op_dir / "before.png"
             pressed_path = op_dir / "pressed.png"
             after_path = op_dir / "after.png"
+            after_300ms_path = op_dir / "after_300ms.png"
+
+            # 优先使用 after.png，session 模式下使用 after_300ms.png
+            compare_after_path = after_path if after_path.exists() else after_300ms_path
+
             before_pressed = (
                 self._image_change_score(before_path, pressed_path, frame_start)
                 if before_path.exists() and pressed_path.exists()
                 else {}
             )
             before_after = (
-                self._image_change_score(before_path, after_path, frame_start)
-                if before_path.exists() and after_path.exists()
+                self._image_change_score(before_path, compare_after_path, frame_start)
+                if before_path.exists() and compare_after_path.exists()
                 else {}
             )
 
@@ -884,6 +1232,9 @@ class MainWindow(QMainWindow):
         device_x, device_y = self._map_frame_to_device(frame_x, frame_y)
         if device_x is None:
             return
+
+        session_active = self.execution_engine.dm.is_session_active()
+
         if action == 0:          # DOWN
             from datetime import datetime
 
@@ -893,13 +1244,22 @@ class MainWindow(QMainWindow):
             self._touch_frame_last = (frame_x, frame_y)
             self._touch_time = time.time()
 
-            # 主线程先把操作目录建好，避免 UP 时还没读到
-            from datetime import datetime
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-            op_dir = Path("screenshots") / f"op_{ts}"
+            if session_active:
+                click_dir = self.execution_engine.dm.get_click_dir()
+                idx = self.execution_engine.dm.click_counter + 1
+                op_dir = click_dir / f"click_{idx:06d}"
+            else:
+                ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+                op_dir = Path("screenshots") / f"op_{ts}"
+
             op_dir.mkdir(parents=True, exist_ok=True)
             self._op_dir_for_touch = op_dir
-            self._save_video_frame_sync("before", op_dir)
+
+            frame = self.video_widget._frame if self.video_widget else None
+            if session_active:
+                self.execution_engine.on_click_down(frame, op_dir)
+            else:
+                self._save_video_frame_sync("before", op_dir)
             self._send_scrcpy_touch(frame_x, frame_y, scrcpy.ACTION_DOWN)
 
             def _capture_pressed():
@@ -932,36 +1292,56 @@ class MainWindow(QMainWindow):
 
             def _exec():
                 try:
-                    if is_tap:
-                        if op_dir:
-                            time.sleep(0.12)
-                            self._save_video_frame_sync("after", op_dir)
-                            self._write_touch_index(
-                                op_dir,
-                                "tap",
-                                duration_ms,
-                                (sx, sy),
-                                (ex, ey),
-                                frame_start,
-                                frame_end,
-                                80,
-                                120,
-                            )
+                    if session_active and op_dir:
+                        # Session 模式：委托给 ExecutionEngine
+                        self.execution_engine.on_click_up(
+                            sx, sy, op_dir,
+                            lambda: self.video_widget._frame if self.video_widget else None
+                        )
+                        # 同时保留 index.json（向后兼容）
+                        self._write_touch_index(
+                            op_dir,
+                            "tap" if is_tap else "swipe",
+                            duration_ms,
+                            (sx, sy),
+                            (ex, ey),
+                            frame_start,
+                            frame_end,
+                            80,
+                            120,
+                        )
                     else:
-                        if op_dir:
-                            time.sleep(0.12)
-                            self._save_video_frame_sync("after", op_dir)
-                            self._write_touch_index(
-                                op_dir,
-                                "swipe",
-                                duration_ms,
-                                (sx, sy),
-                                (ex, ey),
-                                frame_start,
-                                frame_end,
-                                80,
-                                120,
-                            )
+                        # 非 Session 模式：原有逻辑
+                        if is_tap:
+                            if op_dir:
+                                time.sleep(0.12)
+                                self._save_video_frame_sync("after", op_dir)
+                                self._write_touch_index(
+                                    op_dir,
+                                    "tap",
+                                    duration_ms,
+                                    (sx, sy),
+                                    (ex, ey),
+                                    frame_start,
+                                    frame_end,
+                                    80,
+                                    120,
+                                )
+                        else:
+                            if op_dir:
+                                time.sleep(0.12)
+                                self._save_video_frame_sync("after", op_dir)
+                                self._write_touch_index(
+                                    op_dir,
+                                    "swipe",
+                                    duration_ms,
+                                    (sx, sy),
+                                    (ex, ey),
+                                    frame_start,
+                                    frame_end,
+                                    80,
+                                    120,
+                                )
                 except Exception:
                     pass
 
@@ -996,7 +1376,233 @@ class MainWindow(QMainWindow):
 
         threading.Thread(target=_exec, daemon=True).start()
 
+    # ------------------------------------------------------------------
+    # 自动化决策
+    # ------------------------------------------------------------------
+    def do_auto_step(self):
+        """执行一步自动化：截图 -> 视觉解读 -> 决策 -> 执行"""
+        if not (self.client and self.client.alive):
+            self._set_status("状态: 请先连接设备")
+            self._auto_timer.stop()
+            if self.btn_auto_run:
+                self.btn_auto_run.setChecked(False)
+                self.btn_auto_run.setText("开始连续执行")
+            return
+
+        frame = self.video_widget._frame if self.video_widget else None
+        if frame is None:
+            self._set_status("状态: 暂无视频帧")
+            return
+
+        try:
+            from PIL import Image
+            from datetime import datetime
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            op_dir = Path("screenshots") / f"auto_{ts}"
+            op_dir.mkdir(parents=True, exist_ok=True)
+            screenshot_path = op_dir / "frame.png"
+            Image.fromarray(frame.copy()).save(str(screenshot_path))
+        except Exception as e:
+            self._set_status(f"状态: 截图失败 - {e}")
+            return
+
+        goal = self.edit_goal.text().strip() if self.edit_goal else ""
+
+        def _run():
+            try:
+                result = self.decision_engine.run_step(screenshot_path, goal=goal)
+                decision = result.get("decision", {})
+                scene_desc = result.get("scene_description", "")
+                self._bridge.decision_ready.emit({
+                    "decision": decision,
+                    "scene_description": scene_desc,
+                    "screenshot_path": str(screenshot_path),
+                })
+            except Exception as e:
+                import traceback
+                self._bridge.status_changed.emit(f"决策失败: {e}", "#f44747")
+                LogManager().append(f"[ERROR] auto_step:\n{traceback.format_exc()}")
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _toggle_auto_run(self):
+        if self.btn_auto_run.isChecked():
+            self.btn_auto_run.setText("停止连续执行")
+            self.do_auto_step()
+            self._auto_timer.start(3500)
+        else:
+            self.btn_auto_run.setText("开始连续执行")
+            self._auto_timer.stop()
+
+    def _execute_decision_slot(self, payload: dict):
+        """主线程槽：接收决策结果并执行"""
+        decision = payload.get("decision", {})
+        scene_desc = payload.get("scene_description", "")
+        action = decision.get("action", "none")
+        params = decision.get("params", {})
+        reasoning = decision.get("reasoning", "")
+
+        if self.lbl_decision_result:
+            text = f"画面: {scene_desc[:40]}\n动作: {action} | {reasoning[:80]}"
+            self.lbl_decision_result.setText(text)
+
+        self.execute_decision(action, params)
+        self._set_status(f"自动: {action} | {reasoning[:60]}", log=False)
+
+    def execute_decision(self, action: str, params: dict):
+        """将决策转化为实际的屏幕操作（比例坐标 -> 帧坐标）"""
+        if not (self.client and self.client.alive):
+            return
+
+        frame = self.video_widget._frame if self.video_widget else None
+        if frame is None:
+            return
+
+        fh, fw = frame.shape[:2]
+        if fw <= 0 or fh <= 0:
+            return
+
+        if action == "tap":
+            rx = params.get("rx", 0.5)
+            ry = params.get("ry", 0.5)
+            fx = int(max(0.0, min(1.0, rx)) * (fw - 1))
+            fy = int(max(0.0, min(1.0, ry)) * (fh - 1))
+            self._send_scrcpy_touch(fx, fy, scrcpy.ACTION_DOWN)
+            QTimer.singleShot(80, lambda: self._send_scrcpy_touch(fx, fy, scrcpy.ACTION_UP))
+
+        elif action == "swipe":
+            rx1 = params.get("rx1", 0.5)
+            ry1 = params.get("ry1", 0.5)
+            rx2 = params.get("rx2", 0.5)
+            ry2 = params.get("ry2", 0.5)
+            duration_ms = params.get("duration_ms", 300)
+            x1 = int(max(0.0, min(1.0, rx1)) * (fw - 1))
+            y1 = int(max(0.0, min(1.0, ry1)) * (fh - 1))
+            x2 = int(max(0.0, min(1.0, rx2)) * (fw - 1))
+            y2 = int(max(0.0, min(1.0, ry2)) * (fh - 1))
+
+            self._send_scrcpy_touch(x1, y1, scrcpy.ACTION_DOWN)
+            steps = max(3, duration_ms // 50)
+            for i in range(1, steps + 1):
+                t = i / steps
+                mx = int(x1 + (x2 - x1) * t)
+                my = int(y1 + (y2 - y1) * t)
+                delay = int(duration_ms * t)
+                QTimer.singleShot(delay, lambda mx=mx, my=my: self._send_scrcpy_touch(mx, my, scrcpy.ACTION_MOVE))
+            QTimer.singleShot(duration_ms + 50, lambda: self._send_scrcpy_touch(x2, y2, scrcpy.ACTION_UP))
+
+        elif action == "scroll":
+            rx = params.get("rx", 0.5)
+            ry = params.get("ry", 0.5)
+            rdx = params.get("rdx", 0.0)
+            rdy = params.get("rdy", 0.0)
+            x = int(max(0.0, min(1.0, rx)) * (fw - 1))
+            y = int(max(0.0, min(1.0, ry)) * (fh - 1))
+            dx = int(rdx * fw)
+            dy = int(rdy * fh)
+            self._send_scrcpy_touch(x, y, scrcpy.ACTION_DOWN)
+            QTimer.singleShot(50, lambda: self._send_scrcpy_touch(x + dx, y + dy, scrcpy.ACTION_MOVE))
+            QTimer.singleShot(100, lambda: self._send_scrcpy_touch(x + dx, y + dy, scrcpy.ACTION_UP))
+
+        elif action == "wait":
+            # 纯等待，不操作
+            pass
+
+    # ------------------------------------------------------------------
+    # 视频录制
+    # ------------------------------------------------------------------
+    def do_start_record(self):
+        if not (self.client and self.client.alive):
+            self._set_status("状态: 请先连接设备")
+            return
+        if self._video_writer is not None:
+            self._set_status("状态: 正在录制中")
+            return
+
+        frame = self.video_widget._frame if self.video_widget else None
+        if frame is None:
+            self._set_status("状态: 暂无视频帧，无法开始录制")
+            return
+
+        try:
+            import cv2
+            from datetime import datetime
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            record_dir = Path("recordings")
+            record_dir.mkdir(exist_ok=True)
+            self._record_path = record_dir / f"scrcpy_{ts}.mp4"
+
+            h, w = frame.shape[:2]
+            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+            self._video_writer = cv2.VideoWriter(
+                str(self._record_path), fourcc, self._record_fps, (w, h)
+            )
+
+            if self.btn_record:
+                self.btn_record.setEnabled(False)
+            if self.btn_stop_record:
+                self.btn_stop_record.setEnabled(True)
+            self._set_status(f"状态: 开始录制 -> {self._record_path.name}")
+        except Exception as e:
+            self._video_writer = None
+            self._set_status(f"状态: 录制启动失败 - {e}")
+
+    def do_stop_record(self):
+        if self._video_writer is None:
+            self._set_status("状态: 未在录制")
+            return
+
+        try:
+            self._video_writer.release()
+            self._video_writer = None
+            if self.btn_record:
+                self.btn_record.setEnabled(True)
+            if self.btn_stop_record:
+                self.btn_stop_record.setEnabled(False)
+            self._set_status(f"状态: 录制已保存 -> {self._record_path.name}")
+        except Exception as e:
+            self._set_status(f"状态: 停止录制失败 - {e}")
+
+    def do_ocr(self):
+        """对当前视频帧执行 OCR 识别，并将结果输出到日志。"""
+        frame = self.video_widget._frame if self.video_widget else None
+        if frame is None:
+            self._set_status("状态: 暂无视频帧")
+            return
+
+        try:
+            from ocr_client import OCRClient
+            from PIL import Image
+            from datetime import datetime
+
+            # 保存当前帧用于 OCR（也可直接传 numpy 数组）
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            ocr_dir = Path("screenshots") / f"ocr_{ts}"
+            ocr_dir.mkdir(parents=True, exist_ok=True)
+            frame_path = ocr_dir / "frame.png"
+            Image.fromarray(frame.copy()).save(str(frame_path))
+
+            ocr = OCRClient()
+            result = ocr.recognize(frame_path)
+            text = ocr.to_text(frame_path=frame_path)
+
+            if text:
+                LogManager().append(f"[OCR] 识别结果 ({len(result)} 个区域):")
+                for item in result:
+                    LogManager().append(
+                        f"  [{item['score']:.2f}] {item['text']}"
+                    )
+                self._set_status(f"OCR: 识别到 {len(result)} 个文字区域")
+            else:
+                self._set_status("OCR: 未识别到文字")
+        except Exception as e:
+            import traceback
+            self._set_status(f"OCR 识别失败: {e}")
+            LogManager().append(f"[ERROR] OCR:\n{traceback.format_exc()}")
+
     def closeEvent(self, event):
+        if self.execution_engine.is_running():
+            self.execution_engine.stop()
         if self.client:
             self.client.stop()
         event.accept()

@@ -15,6 +15,11 @@ ENV/
 # Screenshots (generated during runtime)
 screenshots/
 
+# Runtime generated data
+recordings/
+game_agent_data/
+clear_scenes.py
+
 # IDE
 .vscode/
 .idea/
