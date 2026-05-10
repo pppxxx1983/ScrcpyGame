@@ -17,6 +17,9 @@ from agent_data import AgentDataManager
 from ocr_client import OCRClient
 from aliyun_ocr_client import AliyunOCRClient
 from log_manager import LogManager
+from scene_index import (
+    SceneIndex, image_fingerprint, _draw_name_on_image,
+)
 
 
 class ExecutionEngine(QObject):
@@ -36,6 +39,7 @@ class ExecutionEngine(QObject):
     task_cleared = Signal()
     task_done = Signal(str, bool)
     scene_image_ready = Signal(str, Path, list)   # text, image_path, objects
+    scene_name_changed = Signal(str)                # 场景识别名字（空字符串表示清空）
 
     def __init__(self):
         super().__init__()
@@ -43,6 +47,9 @@ class ExecutionEngine(QObject):
         self._video_writer = None
         self._record_fps = 20
         self._running = False
+        self._current_frame = None          # 最新视频帧，由 write_frame 更新
+        self._recognize_thread = None       # 场景识别循环线程
+        self._recognize_interval = 2.0      # 每隔 2 秒识别一次
         # 延迟后台预热 OCR 引擎，避免和主窗口初始化竞争 CPU
         def _delayed_warmup():
             time.sleep(3)
@@ -56,7 +63,7 @@ class ExecutionEngine(QObject):
         return self._running
 
     def start(self, frame=None):
-        """开始执行：创建 Session + 启动视频录制（全部在后台线程，不阻塞 UI）。"""
+        """开始执行：创建 Session + 启动视频录制 + 启动场景识别循环线程。"""
         if self._running:
             return
 
@@ -72,13 +79,16 @@ class ExecutionEngine(QObject):
                     self._video_writer = cv2.VideoWriter(
                         str(video_path), fourcc, self._record_fps, (w, h)
                     )
+                    self._current_frame = frame
 
                 self._running = True
                 self.task_cleared.emit()
                 self.task_added.emit("识别场景", True)
                 self.status_changed.emit(f"开始执行 Session {session_id}", "#4ec9b0")
+                LogManager().append(f"[Engine] 开始执行 Session {session_id}")
 
-                self._run_recognize_scene(frame)
+                # 启动场景识别循环线程
+                self._start_recognize_loop()
             except Exception as e:
                 self.status_changed.emit(f"启动失败: {e}", "#f44747")
                 LogManager().append(f"[ERROR] ExecutionEngine.start: {e}")
@@ -86,7 +96,8 @@ class ExecutionEngine(QObject):
         threading.Thread(target=_exec, daemon=True).start()
 
     def stop(self):
-        """停止执行：结束录制 + 结束 Session。"""
+        """停止执行：结束录制 + 结束 Session + 停止识别循环。
+        UnknownFolderProcessor 常驻后台，不随执行状态启停。"""
         if self._video_writer is not None:
             try:
                 self._video_writer.release()
@@ -94,14 +105,28 @@ class ExecutionEngine(QObject):
                 pass
             self._video_writer = None
 
-        self.dm.end_session()
         self._running = False
+        self.dm.end_session()
         self.status_changed.emit("执行已停止", "#ce9178")
+        LogManager().append("[Engine] 执行已停止")
 
-    def write_frame(self, frame):
-        """写入视频帧（供 on_frame 调用，线程安全）。"""
+    def write_frame(self, frame, rgb_frame=None):
+        """写入视频帧并保存最新帧（供 on_frame 调用，线程安全）。
+        scrcpy 原始帧是 BGR，保存为 RGB 供后续截图使用。"""
+        if rgb_frame is not None:
+            self._current_frame = rgb_frame
+        elif frame is not None:
+            import numpy as np
+            # 与 video_widget 保持一致：BGR -> RGB
+            self._current_frame = np.ascontiguousarray(frame[..., ::-1])
         if self._video_writer is not None and frame is not None:
             try:
+                # 确保帧尺寸与录制器一致
+                if hasattr(self._video_writer, '_width') and hasattr(self._video_writer, '_height'):
+                    h, w = frame.shape[:2]
+                    if w != self._video_writer._width or h != self._video_writer._height:
+                        import cv2
+                        frame = cv2.resize(frame, (self._video_writer._width, self._video_writer._height))
                 self._video_writer.write(frame)
             except Exception as e:
                 LogManager().append(f"[WARN] 录制写入失败: {e}")
@@ -126,10 +151,12 @@ class ExecutionEngine(QObject):
         frame_provider: 无参函数，返回当前 numpy frame
         """
         if not self.dm.is_session_active():
+            LogManager().append("[Click] on_click_up skipped: no active session")
             return
 
         def _exec():
             try:
+                LogManager().append(f"[Click] on_click_up start, op_dir={op_dir}")
                 time.sleep(0.3)
                 frame_300 = frame_provider()
                 self._save_frame("after_300ms", op_dir, frame_300)
@@ -138,12 +165,16 @@ class ExecutionEngine(QObject):
                 frame_800 = frame_provider()
                 self._save_frame("after_800ms", op_dir, frame_800)
 
+                before_path = op_dir / "before.png" if op_dir else None
+                after300_path = op_dir / "after_300ms.png" if op_dir else None
+                after800_path = op_dir / "after_800ms.png" if op_dir else None
+                LogManager().append(f"[Click] record_click paths: before={before_path}, after300={after300_path}, after800={after800_path}")
                 self.dm.record_click(
                     x=x,
                     y=y,
-                    before_image=op_dir / "before.png",
-                    after_300ms_image=op_dir / "after_300ms.png",
-                    after_800ms_image=op_dir / "after_800ms.png",
+                    before_image=before_path,
+                    after_300ms_image=after300_path,
+                    after_800ms_image=after800_path,
                 )
                 LogManager().append(
                     f"[Click] 已记录 click #{self.dm.click_counter} -> {op_dir.name}"
@@ -154,7 +185,30 @@ class ExecutionEngine(QObject):
         threading.Thread(target=_exec, daemon=True).start()
 
     # ------------------------------------------------------------------
-    # 识别场景
+    # 场景识别循环线程（持续取帧 → hash查找 → 找不到保存到unknown）
+    # ------------------------------------------------------------------
+    def _start_recognize_loop(self):
+        """启动场景识别循环线程。"""
+        if self._recognize_thread is not None and self._recognize_thread.is_alive():
+            return
+        self._recognize_thread = threading.Thread(target=self._recognize_loop, daemon=True)
+        self._recognize_thread.start()
+        LogManager().append("[Scene] 场景识别循环线程已启动")
+
+    def _recognize_loop(self):
+        """每隔 _recognize_interval 秒取当前帧做一次 hash 识别。"""
+        while self._running:
+            frame = self._current_frame
+            if frame is not None:
+                try:
+                    self._run_recognize_scene(frame)
+                except Exception as e:
+                    LogManager().append(f"[WARN] 识别循环异常: {e}")
+            time.sleep(self._recognize_interval)
+        LogManager().append("[Scene] 场景识别循环线程已停止")
+
+    # ------------------------------------------------------------------
+    # 识别场景（单次）
     # ------------------------------------------------------------------
     @staticmethod
     def _set_low_priority():
@@ -178,112 +232,56 @@ class ExecutionEngine(QObject):
             self.task_subtask_added.emit("识别场景", "场景哈希索引")
 
             temp_path = self._dump_frame_to_temp(frame)
-            t1 = time.perf_counter()
-            LogManager().append(f"[Perf] dump frame: {(t1-t0)*1000:.1f}ms")
             if temp_path is None:
                 self.status_changed.emit("识别场景: 无视频帧", "#f44747")
                 self.task_done.emit("识别场景", False)
                 self.task_done.emit("场景哈希索引", False)
                 return
 
-            # 通知 UI 创建标签页显示场景截图（已知场景无对象列表）
-            self.scene_image_ready.emit("识别场景", temp_path, [])
-
             # 1. 先做场景哈希索引
-            LogManager().append("[Scene] 开始场景哈希索引...")
             from scene_index import SceneIndex, image_fingerprint
             si = SceneIndex()
             fp = image_fingerprint(temp_path)
-            LogManager().append(f"[Scene] 图片指纹: ahash={fp['ahash'][:16]}..., dhash={fp['dhash'][:16]}...")
             best = si.find_best(fp)
-            LogManager().append(f"[Scene] find_best 返回: {best is not None}")
-            if best:
-                LogManager().append(
-                    f"[Scene] 最佳匹配: key={best['scene_key'][:16]}... "
-                    f"confidence={best['confidence']:.2f}"
-                )
             threshold = 0.92
 
             if best and best["confidence"] >= threshold:
-                # 匹配到已知场景，跳过 OCR 和视觉描述
+                # 匹配到已知场景：画名字 + 增加 hits
                 si._record_hit(best["id"])
-                desc = best.get("description", "")
-                LogManager().append(
-                    f"[Scene] 匹配到已知场景: {best['scene_key']} "
-                    f"(confidence={best['confidence']:.2f}, hits={best['hits']+1})"
-                )
-                if desc:
-                    LogManager().append(f"[Scene] 场景描述: {desc}")
-                self.status_changed.emit(
-                    f"识别完成: 已知场景 {best['scene_key'][:16]}...", "#4ec9b0"
-                )
+                # scene_key 已存场景名字，直接显示
+                name = best.get("scene_key", "")[:4]
+                if not name:
+                    name = "已知"
+                # 在截图左上角显示名字（不弹标签页）
+                try:
+                    tagged_path = _draw_name_on_image(temp_path, name)
+                    # 清理临时文件（名字已显示在投屏上，不需要保留文件）
+                    try:
+                        temp_path.unlink(missing_ok=True)
+                        tagged_path.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    LogManager().append(f"[WARN] 标记名字失败: {e}")
+
+                self.scene_name_changed.emit(name)
                 self.task_done.emit("识别场景", True)
                 self.task_done.emit("场景哈希索引", True)
                 return
 
-            # 2. 未匹配到已知场景，执行 OCR + 大模型场景描述
-            LogManager().append("[Scene] 未匹配到已知场景，开始 OCR + 场景描述...")
+            # 2. 未匹配到已知场景：移到 unknown/，等后台 Ollama 8b 识别分类
+            unknown_dir = Path("screenshots") / "unknown"
+            unknown_dir.mkdir(parents=True, exist_ok=True)
+            unknown_path = unknown_dir / temp_path.name
+            try:
+                import shutil
+                shutil.move(str(temp_path), str(unknown_path))
+            except Exception as e:
+                LogManager().append(f"[WARN] 移动文件失败: {e}")
 
-            # OCR
-            ocr = AliyunOCRClient()
-            t2 = time.perf_counter()
-            result = ocr.recognize(temp_path)
-            t3 = time.perf_counter()
-            LogManager().append(f"[Perf] AliyunOCR request: {(t3-t2)*1000:.1f}ms")
-            text = "\n".join([i["text"] for i in result])
-
-            lines = [f"[OCR] 识别到 {len(result)} 个区域:"]
-            for item in result[:10]:
-                lines.append(f"  [{item['score']:.2f}] {item['text']}")
-            for line in lines:
-                LogManager().append(line)
-
-            # 大模型一次性分析：OCR + 场景描述 + 对象检测
-            from llm_client import QwenVLClient
-            vl = QwenVLClient(api_key="sk-b368216722514ad1956826669fe15b05")
-
-            t4 = time.perf_counter()
-            analysis = vl.analyze_scene(temp_path)
-            t5 = time.perf_counter()
-            LogManager().append(f"[Perf] 大模型分析: {(t5-t4)*1000:.1f}ms")
-
-            scene_desc = analysis.get("scene_description", "")
-            ocr_text = analysis.get("ocr_text", [])
-            objects = analysis.get("objects", [])
-
-            LogManager().append(f"[Scene] 场景描述: {scene_desc}")
-            LogManager().append(f"[OCR] 识别到 {len(ocr_text)} 行文字:")
-            for line in ocr_text[:10]:
-                LogManager().append(f"  {line}")
-            LogManager().append(f"[Obj] 检测到 {len(objects)} 个对象:")
-            for obj in objects[:10]:
-                LogManager().append(f"  {obj['name']} -> {obj['bbox']}")
-
-            # 分析完成后标记识别场景完成
-            self.status_changed.emit(
-                f"识别完成: 新场景，{len(ocr_text)} 文字/{len(objects)} 对象", "#4ec9b0"
-            )
+            self.scene_name_changed.emit("")
             self.task_done.emit("识别场景", True)
-
-            # 通知 UI 显示带 bbox 标注的截图
-            self.scene_image_ready.emit("识别场景", temp_path, objects)
-
-            # 3. 后台插入新场景到索引（带上描述）
-            def _insert_new_scene():
-                try:
-                    t8 = time.perf_counter()
-                    scene_id = si._insert_scene(temp_path, fp, scene_desc)
-                    t9 = time.perf_counter()
-                    LogManager().append(
-                        f"[Scene] 已插入新场景 #{scene_id} "
-                        f"(key={fp['dhash'][:16]}..., 耗时{(t9-t8)*1000:.1f}ms)"
-                    )
-                    self.task_done.emit("场景哈希索引", True)
-                except Exception as e:
-                    LogManager().append(f"[WARN] 插入新场景失败: {e}")
-                    self.task_done.emit("场景哈希索引", False)
-
-            threading.Thread(target=_insert_new_scene, daemon=True).start()
+            self.task_done.emit("场景哈希索引", True)
 
         except Exception as e:
             import traceback
@@ -316,17 +314,17 @@ class ExecutionEngine(QObject):
 
     @staticmethod
     def _dump_frame_to_temp(frame) -> Optional[Path]:
-        """将当前帧保存到临时文件，返回路径（OCR 用，会降分辨率以减少负载）。"""
+        """将当前帧保存到临时文件，返回路径。临时文件放在 .temp/ 避免污染根目录。"""
         if frame is None:
             return None
         try:
             from PIL import Image
 
             ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-            temp_path = Path("screenshots") / f"scene_{ts}.png"
-            temp_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_dir = Path("screenshots") / ".temp"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            temp_path = temp_dir / f"scene_{ts}.png"
 
-            # 在线 OCR 不消耗本地 CPU，保存原分辨率以保证识别效果
             Image.fromarray(frame).save(str(temp_path))
             return temp_path
         except Exception as e:

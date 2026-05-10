@@ -35,9 +35,8 @@ class DecisionEngine:
     # 感知层 (Vision)
     # ------------------------------------------------------------------
     def perceive(self, screenshot_path: Path) -> str:
-        """用 qwen-vl-max 解读当前画面，返回一句中文描述。"""
+        """用视觉模型解读当前画面，返回一句中文描述。"""
         description = self.vision.describe_image(screenshot_path)
-        LogManager().append(f"[Vision] {description}")
         return description
 
     # ------------------------------------------------------------------
