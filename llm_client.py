@@ -251,8 +251,10 @@ class DashScopeVLClient:
     DEFAULT_MODEL = "qwen-vl-max"
 
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.environ.get(
-            "DASHSCOPE_API_KEY", ""
+        self.api_key = (
+            api_key
+            or os.environ.get("DASHSCOPE_API_KEY", "")
+            or "sk-b368216722514ad1956826669fe15b05"
         )
         self.model = self.DEFAULT_MODEL
         self.base_url = self.DEFAULT_URL
