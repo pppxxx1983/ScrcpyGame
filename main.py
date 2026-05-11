@@ -3949,13 +3949,19 @@ class MainWindow(QMainWindow):
             self._set_status(result)
             self._refresh_audit_list()
 
-        def reanalyze_with_gpt55():
-            status.setText("GPT-5.5 analyzing full UI...")
-            btn_reanalyze.setEnabled(False)
-            self._set_status("GPT-5.5 reanalyze: request started")
-            LogManager().append(f"[GPT-5.5 Reanalyze] button clicked: folder={folder}, image={image_path}")
+        def reanalyze_with_model(model_name: str):
+            label = "GPT-5.5" if model_name == "gpt55" else "Qwen-VL"
+            btn = btn_reanalyze if model_name == "gpt55" else btn_reanalyze_qwen
+            method = self._reanalyze_yolo_objects_with_gpt55 if model_name == "gpt55" else self._reanalyze_yolo_objects_with_qwen_vl_max
+            model_key = "openai/gpt-5.5" if model_name == "gpt55" else "qwen-vl-max"
 
-            token = f"{folder.resolve()}:{time.time()}"
+            status.setText(f"{label} analyzing full UI...")
+            btn_reanalyze.setEnabled(False)
+            btn_reanalyze_qwen.setEnabled(False)
+            self._set_status(f"{label} reanalyze: request started")
+            LogManager().append(f"[{label} Reanalyze] button clicked: folder={folder}, image={image_path}")
+
+            token = f"{folder.resolve()}:{time.time()}:{model_name}"
 
             def _apply_result(payload):
                 if payload.get("token") != token:
@@ -3966,14 +3972,15 @@ class MainWindow(QMainWindow):
                     pass
                 result = payload.get("result", {})
                 btn_reanalyze.setEnabled(True)
+                btn_reanalyze_qwen.setEnabled(True)
                 if result.get("error"):
-                    status.setText(f"GPT-5.5 failed: {result['error']}")
-                    self._set_status(f"GPT-5.5 failed: {result['error']}")
+                    status.setText(f"{label} failed: {result['error']}")
+                    self._set_status(f"{label} failed: {result['error']}")
                     return
                 new_objects = result.get("objects") or []
                 if not new_objects:
-                    status.setText("GPT-5.5 returned no UI boxes. See log/raw response files.")
-                    self._set_status("GPT-5.5 returned no UI boxes")
+                    status.setText(f"{label} returned no UI boxes. See log/raw response files.")
+                    self._set_status(f"{label} returned no UI boxes")
                     return
                 for obj in new_objects:
                     obj["review_approved"] = False
@@ -3981,22 +3988,23 @@ class MainWindow(QMainWindow):
                 objects.extend(new_objects)
                 selected["index"] = 0
                 user_intent = result.get("user_intent", "")
-                data["gpt_user_intent"] = user_intent
+                if user_intent:
+                    data["gpt_user_intent"] = user_intent
                 data["gpt_yolo_objects"] = {
                     "status": "ok",
-                    "model": "openai/gpt-5.5",
+                    "model": model_key,
                     "objects": new_objects,
                     "raw": result.get("raw", ""),
                 }
                 load_selected()
                 intent_text = f" | Intent: {user_intent}" if user_intent else ""
-                status.setText(f"GPT-5.5 found {len(new_objects)} UI boxes.{intent_text} Review then Save/Approve.")
-                self._set_status(f"GPT-5.5 found {len(new_objects)} UI boxes{intent_text}")
+                status.setText(f"{label} found {len(new_objects)} UI boxes.{intent_text} Review then Save/Approve.")
+                self._set_status(f"{label} found {len(new_objects)} UI boxes{intent_text}")
 
             self._bridge.yolo_reanalyze_ready.connect(_apply_result)
 
             def _run():
-                result = self._reanalyze_yolo_objects_with_gpt55(folder, data, image_path)
+                result = method(folder, data, image_path)
                 self._bridge.yolo_reanalyze_ready.emit({"token": token, "result": result})
 
             threading.Thread(target=_run, daemon=True).start()
@@ -4004,7 +4012,8 @@ class MainWindow(QMainWindow):
         btn_save.clicked.connect(lambda: save_annotation(False))
         btn_approve.clicked.connect(lambda: save_annotation(True))
         btn_train.clicked.connect(self._train_yolo_incremental)
-        btn_reanalyze.clicked.connect(reanalyze_with_gpt55)
+        btn_reanalyze.clicked.connect(lambda: reanalyze_with_model("gpt55"))
+        btn_reanalyze_qwen.clicked.connect(lambda: reanalyze_with_model("qwen_vl"))
 
         def open_bbox_editor():
             save_current_to_memory()
