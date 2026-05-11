@@ -12,6 +12,7 @@ from typing import Dict, Any, List, Optional
 from llm_client import QwenVLClient, DeepSeekClient
 from ocr_client import OCRClient
 from log_manager import LogManager
+from rl_optimizer import RLOptimizer, AdaptivePolicy
 
 
 class DecisionEngine:
@@ -25,11 +26,14 @@ class DecisionEngine:
         # result["decision"] -> {"action": "tap", "params": {...}, "reasoning": "..."}
     """
 
-    def __init__(self):
+    def __init__(self, rl_path: Optional[Path] = None):
         self.vision = QwenVLClient()
         self.decision = DeepSeekClient()
         self.ocr = OCRClient()
         self.history: List[Dict[str, Any]] = []
+        self.rl = RLOptimizer(rl_path or Path("game_agent_data/rl_policy.json"))
+        self.adaptive = AdaptivePolicy(self.rl)
+        self._last_state_action: Optional[Tuple[str, str]] = None
 
     # ------------------------------------------------------------------
     # 感知层 (Vision)
@@ -55,6 +59,8 @@ class DecisionEngine:
         goal: str = "",
         available_actions: Optional[List[str]] = None,
         ocr_text: str = "",
+        candidate_actions: Optional[List[dict]] = None,
+        state_key: str = "",
     ) -> Dict[str, Any]:
         """
         用 DeepSeek 决定下一步操作。
@@ -117,6 +123,19 @@ class DecisionEngine:
         )
 
         result = self.decision.decide(system_prompt, user_prompt)
+        # Adaptive re-ranking if candidates provided
+        if candidate_actions and state_key:
+            ranked = self.adaptive.rank_actions(state_key, candidate_actions)
+            if ranked:
+                best = ranked[0]
+                result["action"] = best.get("action_type", "tap")
+                result["params"] = {
+                    "rx": best.get("x", 0.5) / 1000.0,
+                    "ry": best.get("y", 0.5) / 1000.0,
+                }
+                result["reasoning"] = f"[Adaptive] {best.get('element_name','')} (rule confidence {best.get('confidence',0):.2f})"
+                result["_adaptive_selected"] = best.get("rule_key") or best.get("element_name")
+                self._last_state_action = (state_key, result["_adaptive_selected"])
         LogManager().append(
             f"[Decision] {result.get('action')} | "
             f"{result.get('reasoning', '')[:120]}"
@@ -137,6 +156,18 @@ class DecisionEngine:
         # 只保留最近 50 条
         if len(self.history) > 50:
             self.history = self.history[-50:]
+
+    def feedback(self, success: bool, next_state_key: str = ""):
+        """接收执行结果反馈，更新RL策略 (TODO #27)。"""
+        if not self._last_state_action:
+            return
+        state_key, action_key = self._last_state_action
+        reward = 1.0 if success else -1.0
+        self.rl.update(state_key, action_key, reward, next_state_key or None)
+        LogManager().append(
+            f"[RL] update state={state_key} action={action_key} reward={reward}"
+        )
+        self._last_state_action = None
 
     def clear_history(self) -> None:
         """清空历史决策记录。"""

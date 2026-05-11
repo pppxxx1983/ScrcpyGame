@@ -20,6 +20,7 @@ class VideoGLWidget(QWidget):
         self._frame_count = 0
         self.on_touch = None          # callback(frame_x, frame_y, action)
         self.on_scroll = None         # callback(frame_x, frame_y, h, v)
+        self._status_lines = []
         self._overlay_text = ""       # 场景识别名字叠加文字
 
     def show_touch_feedback(self, points, hold_ms: int = 450):
@@ -120,6 +121,10 @@ class VideoGLWidget(QWidget):
         self._overlay_text = text
         self.update()
 
+    def set_status_lines(self, lines):
+        self._status_lines = [str(line) for line in (lines or []) if str(line).strip()]
+        self.update()
+
     def paintEvent(self, event):
         if self._image is None:
             return
@@ -146,6 +151,28 @@ class VideoGLWidget(QWidget):
             painter.fillRect(pad_x, pad_y, text_w, text_h, QColor(0, 0, 0, 180))
             painter.setPen(QColor("#ffffff"))
             painter.drawText(pad_x + 10, pad_y + fm.ascent() + 7, text)
+
+        if self._status_lines:
+            font = QFont("Microsoft YaHei", 11, QFont.Weight.Bold)
+            painter.setFont(font)
+            fm = painter.fontMetrics()
+            lines = self._status_lines[:5]
+            text_w = max(fm.horizontalAdvance(line) for line in lines) + 18
+            line_h = fm.height() + 4
+            text_h = line_h * len(lines) + 12
+            panel_x = x + new_w - text_w - 12
+            panel_y = y + 12
+            painter.fillRect(panel_x, panel_y, text_w, text_h, QColor(0, 0, 0, 170))
+            for idx, line in enumerate(lines):
+                if line.startswith("规则"):
+                    painter.setPen(QColor("#4ec9b0"))
+                elif line.startswith("录像"):
+                    painter.setPen(QColor("#9cdcfe"))
+                elif line.startswith("待"):
+                    painter.setPen(QColor("#ffcc00"))
+                else:
+                    painter.setPen(QColor("#ffffff"))
+                painter.drawText(panel_x + 9, panel_y + 9 + idx * line_h + fm.ascent(), line)
 
         touch_points = getattr(self, "_touch_points", [])
         if touch_points:

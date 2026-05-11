@@ -13,11 +13,33 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List
 
 from log_manager import LogManager
+from repositories.session_repo import SessionRepository
+from repositories.event_repo import EventRepository
+from repositories.ui_element_repo import UiElementRepository
+from repositories.runtime_rule_repo import RuntimeRuleRepository
+from repositories.stats_repo import StatsRepository
+
 
 GAME_DATA_DIR = Path("game_agent_data") / "games" / "my_game"
 
 
-class AgentDataManager:
+def set_game_data_dir(game_name: str) -> Path:
+    """Switch active game data directory (TODO #28 multi-game support)."""
+    global GAME_DATA_DIR
+    GAME_DATA_DIR = Path("game_agent_data") / "games" / game_name
+    # Reset singleton so next access re-initializes
+    AgentDataManager._instance = None
+    LogManager().append(f"[GameSwitch] switched to {GAME_DATA_DIR}")
+    return GAME_DATA_DIR
+
+
+class AgentDataManager(
+    SessionRepository,
+    EventRepository,
+    UiElementRepository,
+    RuntimeRuleRepository,
+    StatsRepository,
+):
     """
     Agent 数据管理（单例）。
 
@@ -49,7 +71,19 @@ class AgentDataManager:
         self._init_db()
         self.current_session_id: Optional[str] = None
         self.current_session_dir: Optional[Path] = None
+        self.current_session_events_path: Optional[Path] = None
+        self.current_session_meta_path: Optional[Path] = None
         self.click_counter = 0
+
+    def switch_game(self, game_name: str):
+        """Re-initialize for a different game."""
+        global GAME_DATA_DIR
+        GAME_DATA_DIR = Path("game_agent_data") / "games" / game_name
+        self.game_dir = GAME_DATA_DIR
+        self._init_dirs()
+        self.db_path = self.game_dir / "agent.db"
+        self._init_db()
+        LogManager().append(f"[AgentData] switched game to {game_name}")
 
     # ------------------------------------------------------------------
     # 目录 & 数据库初始化
@@ -202,6 +236,9 @@ class AgentDataManager:
             except Exception:
                 pass
 
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ui_element_scene_id ON ui_element(scene_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ui_element_scene_key ON ui_element(scene_key)")
+
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS physical_event (
@@ -230,6 +267,39 @@ class AgentDataManager:
             """
         )
 
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS runtime_rule (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule_key TEXT UNIQUE,
+                scene_id INTEGER,
+                scene_key TEXT,
+                element_id INTEGER,
+                element_name TEXT,
+                action_type TEXT,
+                action_effect TEXT,
+                user_intent TEXT,
+                bbox_json TEXT,
+                next_scene_id INTEGER,
+                next_scene_key TEXT,
+                source_event TEXT,
+                source TEXT,
+                confidence REAL,
+                hits INTEGER DEFAULT 0,
+                enabled INTEGER DEFAULT 1,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_runtime_rule_scene_id ON runtime_rule(scene_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_runtime_rule_scene_key ON runtime_rule(scene_key)")
+        # 兼容升级：添加 enabled 列
+        try:
+            cursor.execute("ALTER TABLE runtime_rule ADD COLUMN enabled INTEGER DEFAULT 1")
+        except Exception:
+            pass
+
         conn.commit()
         conn.close()
 
@@ -246,333 +316,3 @@ class AgentDataManager:
     # ------------------------------------------------------------------
     # Session
     # ------------------------------------------------------------------
-    def start_session(self) -> str:
-        """开始新 session，返回 session_key。"""
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.current_session_id = ts
-        self.current_session_dir = self.game_dir / "sessions" / ts
-        (self.current_session_dir / "clicks").mkdir(parents=True, exist_ok=True)
-        (self.current_session_dir / "frames").mkdir(parents=True, exist_ok=True)
-
-        video_path = self.game_dir / "raw_videos" / f"{ts}.mp4"
-
-        conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO session (session_key, game_name, video_path) VALUES (?, ?, ?)",
-            (ts, "my_game", str(video_path)),
-        )
-        conn.commit()
-        conn.close()
-
-        session_json = {
-            "session_id": ts,
-            "game_name": "my_game",
-            "video_path": str(video_path),
-            "created_at": datetime.now().isoformat(),
-        }
-        (self.current_session_dir / "session.json").write_text(
-            json.dumps(session_json, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-        self.click_counter = 0
-        return ts
-
-    def end_session(self):
-        """结束当前 session。"""
-        self.current_session_id = None
-        self.current_session_dir = None
-        self.click_counter = 0
-
-    def is_session_active(self) -> bool:
-        return self.current_session_id is not None
-
-    # ------------------------------------------------------------------
-    # Click 事件
-    # ------------------------------------------------------------------
-    def record_click(
-        self,
-        x: int,
-        y: int,
-        before_image: Optional[Path] = None,
-        after_300ms_image: Optional[Path] = None,
-        after_800ms_image: Optional[Path] = None,
-    ) -> Dict[str, Any]:
-        """记录一次点击事件，返回 click 数据。"""
-        LogManager().append(f"[AgentData] record_click called: before={before_image}, after300={after_300ms_image}, after800={after_800ms_image}")
-        if not self.current_session_id:
-            raise RuntimeError("No active session")
-
-        self.click_counter += 1
-        idx = self.click_counter
-
-        click_dir = self.current_session_dir / "clicks"
-        click_dir.mkdir(parents=True, exist_ok=True)
-
-        click_data = {
-            "session_id": self.current_session_id,
-            "click_index": idx,
-            "timestamp_ms": int(time.time() * 1000),
-            "click": {"x": x, "y": y},
-            "before_image": before_image.name if before_image else None,
-            "after_images": [],
-        }
-
-        if after_300ms_image:
-            click_data["after_images"].append(after_300ms_image.name)
-            click_data["after_300ms_image"] = after_300ms_image.name
-        if after_800ms_image:
-            click_data["after_images"].append(after_800ms_image.name)
-            click_data["after_800ms_image"] = after_800ms_image.name
-
-        click_json_path = click_dir / f"click_{idx:06d}.json"
-        click_json_path.write_text(
-            json.dumps(click_data, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-
-        conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
-        db_before = str(before_image) if before_image else None
-        db_after300 = str(after_300ms_image) if after_300ms_image else None
-        db_after800 = str(after_800ms_image) if after_800ms_image else None
-        LogManager().append(f"[AgentData] DB insert: before={db_before}, after300={db_after300}, after800={db_after800}")
-        cursor.execute(
-            """
-            INSERT INTO click_event
-            (session_id, index_no, timestamp_ms, x, y, before_image, after_300ms_image, after_800ms_image)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                self.current_session_id,
-                idx,
-                click_data["timestamp_ms"],
-                x,
-                y,
-                db_before,
-                db_after300,
-                db_after800,
-            ),
-        )
-        conn.commit()
-        conn.close()
-
-        return click_data
-
-    # ------------------------------------------------------------------
-    # 辅助
-    # ------------------------------------------------------------------
-    def get_click_dir(self) -> Optional[Path]:
-        if self.current_session_dir:
-            return self.current_session_dir / "clicks"
-        return None
-
-    def record_physical_event(
-        self,
-        event_key: str,
-        action_type: str,
-        timestamp_ms: int,
-        duration_ms: int,
-        touch: Dict[str, Any],
-        folder_path: Path,
-        images: Dict[str, Any],
-        index_path: Path,
-        yolo: Optional[Dict[str, Any]] = None,
-    ) -> int:
-        """记录一次物理触摸/投屏触摸事件，允许重复写入时覆盖同 event_key。"""
-        start = touch.get("start", {})
-        end = touch.get("end", {})
-        frame_start = touch.get("frame_start", {})
-        frame_end = touch.get("frame_end", {})
-        yolo = yolo or {}
-
-        conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            INSERT INTO physical_event (
-                event_key, action_type, timestamp_ms, duration_ms,
-                device_start_x, device_start_y, device_end_x, device_end_y,
-                frame_start_x, frame_start_y, frame_end_x, frame_end_y,
-                folder_path, before_image, pressed_image, after_image,
-                index_path, yolo_image, yolo_label
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(event_key) DO UPDATE SET
-                action_type=excluded.action_type,
-                timestamp_ms=excluded.timestamp_ms,
-                duration_ms=excluded.duration_ms,
-                device_start_x=excluded.device_start_x,
-                device_start_y=excluded.device_start_y,
-                device_end_x=excluded.device_end_x,
-                device_end_y=excluded.device_end_y,
-                frame_start_x=excluded.frame_start_x,
-                frame_start_y=excluded.frame_start_y,
-                frame_end_x=excluded.frame_end_x,
-                frame_end_y=excluded.frame_end_y,
-                folder_path=excluded.folder_path,
-                before_image=excluded.before_image,
-                pressed_image=excluded.pressed_image,
-                after_image=excluded.after_image,
-                index_path=excluded.index_path,
-                yolo_image=excluded.yolo_image,
-                yolo_label=excluded.yolo_label
-            """,
-            (
-                event_key,
-                action_type,
-                timestamp_ms,
-                duration_ms,
-                start.get("x"),
-                start.get("y"),
-                end.get("x"),
-                end.get("y"),
-                frame_start.get("x"),
-                frame_start.get("y"),
-                frame_end.get("x"),
-                frame_end.get("y"),
-                str(folder_path),
-                str(folder_path / images["before"]) if images.get("before") else None,
-                str(folder_path / images["pressed"]) if images.get("pressed") else None,
-                str(folder_path / images["after"]) if images.get("after") else None,
-                str(index_path),
-                yolo.get("dataset_image"),
-                yolo.get("dataset_label"),
-            ),
-        )
-        row_id = int(cursor.lastrowid)
-        conn.commit()
-        conn.close()
-        return row_id
-
-    def find_ui_element_by_hash(self, fingerprint: Dict[str, Any], threshold: float = 0.88) -> Optional[Dict[str, Any]]:
-        conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
-        rows = cursor.execute(
-            """
-            SELECT id, scene_id, scene_key, element_type, element_name, text,
-                   x1, y1, x2, y2, source, confidence, dhash, ahash,
-                   image_path, yolo_class_id, action_effect
-            FROM ui_element
-            WHERE dhash IS NOT NULL AND dhash != ''
-            """
-        ).fetchall()
-        conn.close()
-
-        best = None
-        for row in rows:
-            d_conf = self._hash_confidence(fingerprint.get("dhash", ""), row[12])
-            a_conf = self._hash_confidence(fingerprint.get("ahash", ""), row[13])
-            confidence = round(d_conf * 0.75 + a_conf * 0.25, 6)
-            if confidence < threshold:
-                continue
-            item = {
-                "id": row[0],
-                "scene_id": row[1],
-                "scene_key": row[2],
-                "element_type": row[3],
-                "element_name": row[4],
-                "text": row[5],
-                "bbox_xyxy": [row[6], row[7], row[8], row[9]],
-                "source": row[10],
-                "confidence": confidence,
-                "stored_confidence": row[11],
-                "dhash": row[12],
-                "ahash": row[13],
-                "image_path": row[14],
-                "yolo_class_id": row[15],
-                "action_effect": row[16],
-            }
-            if best is None or item["confidence"] > best["confidence"]:
-                best = item
-        return best
-
-    def upsert_ui_element(
-        self,
-        scene_id: Optional[int],
-        scene_key: str,
-        element_type: str,
-        element_name: str,
-        text: str,
-        bbox_xyxy: list[int],
-        source: str,
-        confidence: float,
-        fingerprint: Dict[str, Any],
-        image_path: Path,
-        yolo_class_id: int,
-        action_effect: str,
-    ) -> int:
-        x1, y1, x2, y2 = bbox_xyxy
-        conn = sqlite3.connect(str(self.db_path))
-        cursor = conn.cursor()
-        existing = cursor.execute(
-            "SELECT id FROM ui_element WHERE dhash = ? AND ahash = ?",
-            (fingerprint.get("dhash", ""), fingerprint.get("ahash", "")),
-        ).fetchone()
-        if existing:
-            row_id = int(existing[0])
-            cursor.execute(
-                """
-                UPDATE ui_element
-                SET scene_id=?, scene_key=?, element_type=?, element_name=?, text=?,
-                    x1=?, y1=?, x2=?, y2=?, source=?, confidence=?,
-                    image_path=?, yolo_class_id=?, action_effect=?
-                WHERE id=?
-                """,
-                (
-                    scene_id,
-                    scene_key,
-                    element_type,
-                    element_name,
-                    text,
-                    x1,
-                    y1,
-                    x2,
-                    y2,
-                    source,
-                    confidence,
-                    str(image_path),
-                    yolo_class_id,
-                    action_effect,
-                    row_id,
-                ),
-            )
-        else:
-            cursor.execute(
-                """
-                INSERT INTO ui_element (
-                    scene_id, scene_key, element_type, element_name, text,
-                    x1, y1, x2, y2, source, confidence, dhash, ahash,
-                    image_path, yolo_class_id, action_effect
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    scene_id,
-                    scene_key,
-                    element_type,
-                    element_name,
-                    text,
-                    x1,
-                    y1,
-                    x2,
-                    y2,
-                    source,
-                    confidence,
-                    fingerprint.get("dhash", ""),
-                    fingerprint.get("ahash", ""),
-                    str(image_path),
-                    yolo_class_id,
-                    action_effect,
-                ),
-            )
-            row_id = int(cursor.lastrowid)
-        conn.commit()
-        conn.close()
-        return row_id
-
-    def get_video_path(self) -> Optional[Path]:
-        if self.current_session_id:
-            return self.game_dir / "raw_videos" / f"{self.current_session_id}.mp4"
-        return None

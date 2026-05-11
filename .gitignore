@@ -20,6 +20,9 @@ recordings/
 game_agent_data/
 clear_scenes.py
 
+# Secrets
+.env
+
 # IDE
 .vscode/
 .idea/

@@ -244,6 +244,95 @@ class QwenVLClient:
         }
 
 
+class DashScopeVLClient:
+    """阿里云 DashScope qwen-vl-max 视觉模型客户端（OpenAI 兼容格式）"""
+
+    DEFAULT_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    DEFAULT_MODEL = "qwen-vl-max"
+
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = (
+            api_key
+            or os.environ.get("DASHSCOPE_API_KEY", "")
+            or "sk-b368216722514ad1956826669fe15b05"
+        )
+        self.model = self.DEFAULT_MODEL
+        self.base_url = self.DEFAULT_URL
+        self._client: Optional[OpenAI] = None
+
+    def _get_client(self) -> OpenAI:
+        if self._client is None:
+            self._client = OpenAI(base_url=self.base_url, api_key=self.api_key)
+        return self._client
+
+    def is_ready(self) -> bool:
+        return bool(self.api_key)
+
+    @staticmethod
+    def _prepare_image(image_path: Path) -> str:
+        """压缩图片并返回 base64 JPEG。"""
+        from PIL import Image
+        import io
+
+        with Image.open(image_path) as img:
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            max_edge = 1024
+            if max(img.width, img.height) > max_edge:
+                ratio = max_edge / max(img.width, img.height)
+                img = img.resize((int(img.width * ratio), int(img.height * ratio)), Image.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=90)
+            return base64.b64encode(buf.getvalue()).decode("ascii")
+
+    def call_vision(
+        self,
+        image_path: Path,
+        prompt: str,
+        max_tokens: int = 4096,
+        timeout: int = 180,
+    ) -> str:
+        """调用 qwen-vl-max 视觉模型，返回原始文本。失败抛出异常。"""
+        from log_manager import LogManager
+
+        log = LogManager()
+        if not self.api_key:
+            return "[dashscope_vl_error] DASHSCOPE_API_KEY not configured"
+
+        image_path = Path(image_path)
+        if not image_path.exists():
+            return "[dashscope_vl_error] Image not found"
+
+        image_b64 = self._prepare_image(image_path)
+        log.append(f"[DashScopeVL] >>> call_vision | model={self.model} | file={image_path}")
+        try:
+            response = self._get_client().chat.completions.create(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"},
+                            },
+                            {"type": "text", "text": prompt},
+                        ],
+                    }
+                ],
+                stream=False,
+                temperature=0,
+                max_tokens=max_tokens,
+                timeout=timeout,
+            )
+            content = (response.choices[0].message.content or "").strip()
+            log.append(f"[DashScopeVL] <<< call_vision OK | len={len(content)}")
+            return content
+        except Exception as e:
+            log.append(f"[DashScopeVL] call_vision FAIL | {e}")
+            raise
+
+
 class DeepSeekClient:
     """DeepSeek 决策模型客户端（OpenAI 兼容格式）"""
 

@@ -7,6 +7,7 @@
 
 import threading
 import time
+import json
 from pathlib import Path
 from datetime import datetime
 from typing import Callable, Optional
@@ -46,6 +47,11 @@ class ExecutionEngine(QObject):
         self.dm = AgentDataManager()
         self._video_writer = None
         self._record_fps = 20
+        self._record_started_perf = 0.0
+        self._record_started_ms = 0
+        self._record_frame_count = 0
+        self._record_last_frame_perf = 0.0
+        self._record_video_path: Path | None = None
         self._running = False
         self._current_frame = None          # 最新视频帧，由 write_frame 更新
         self._recognize_thread = None       # 场景识别循环线程
@@ -71,6 +77,11 @@ class ExecutionEngine(QObject):
             try:
                 session_id = self.dm.start_session()
                 video_path = self.dm.get_video_path()
+                self._record_video_path = video_path
+                self._record_started_perf = time.perf_counter()
+                self._record_started_ms = int(time.time() * 1000)
+                self._record_frame_count = 0
+                self._record_last_frame_perf = 0.0
 
                 if frame is not None:
                     import cv2
@@ -80,6 +91,7 @@ class ExecutionEngine(QObject):
                         str(video_path), fourcc, self._record_fps, (w, h)
                     )
                     self._current_frame = frame
+                self._write_recording_meta(finished=False)
 
                 self._running = True
                 self.task_cleared.emit()
@@ -100,6 +112,7 @@ class ExecutionEngine(QObject):
         UnknownFolderProcessor 常驻后台，不随执行状态启停。"""
         if self._video_writer is not None:
             try:
+                self._write_recording_meta(finished=True)
                 self._video_writer.release()
             except Exception:
                 pass
@@ -120,6 +133,10 @@ class ExecutionEngine(QObject):
             # 与 video_widget 保持一致：BGR -> RGB
             self._current_frame = np.ascontiguousarray(frame[..., ::-1])
         if self._video_writer is not None and frame is not None:
+            now = time.perf_counter()
+            min_interval = 1.0 / max(1, self._record_fps)
+            if self._record_last_frame_perf and now - self._record_last_frame_perf < min_interval:
+                return
             try:
                 # 确保帧尺寸与录制器一致
                 if hasattr(self._video_writer, '_width') and hasattr(self._video_writer, '_height'):
@@ -128,8 +145,52 @@ class ExecutionEngine(QObject):
                         import cv2
                         frame = cv2.resize(frame, (self._video_writer._width, self._video_writer._height))
                 self._video_writer.write(frame)
+                self._record_frame_count += 1
+                self._record_last_frame_perf = now
             except Exception as e:
                 LogManager().append(f"[WARN] 录制写入失败: {e}")
+
+    def get_recording_context(self) -> dict:
+        if self._video_writer is None or not self._record_started_perf:
+            return {}
+        offset_ms = max(0, int((time.perf_counter() - self._record_started_perf) * 1000))
+        return {
+            "kind": "session",
+            "video_path": str(self._record_video_path or ""),
+            "events_path": str(self.dm.current_session_events_path or ""),
+            "meta_path": str(self.dm.current_session_meta_path or ""),
+            "video_offset_ms": offset_ms,
+            "started_timestamp_ms": self._record_started_ms,
+            "frame_count": self._record_frame_count,
+            "fps": self._record_fps,
+            "session_id": self.dm.current_session_id or "",
+        }
+
+    def _write_recording_meta(self, finished: bool = False):
+        meta_path = self.dm.current_session_meta_path
+        if not meta_path:
+            return
+        try:
+            ctx = self.get_recording_context()
+            if not ctx:
+                ctx = {
+                    "kind": "session",
+                    "video_path": str(self._record_video_path or ""),
+                    "events_path": str(self.dm.current_session_events_path or ""),
+                    "meta_path": str(meta_path),
+                    "video_offset_ms": 0,
+                    "started_timestamp_ms": self._record_started_ms,
+                    "frame_count": self._record_frame_count,
+                    "fps": self._record_fps,
+                    "session_id": self.dm.current_session_id or "",
+                }
+            ctx["finished"] = bool(finished)
+            if finished:
+                ctx["ended_timestamp_ms"] = int(time.time() * 1000)
+                ctx["ended_at"] = datetime.now().isoformat()
+            meta_path.write_text(json.dumps(ctx, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            LogManager().append(f"[WARN] write session recording meta failed: {e}")
 
     # ------------------------------------------------------------------
     # 点击事件

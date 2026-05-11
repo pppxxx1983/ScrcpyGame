@@ -483,6 +483,26 @@ class SceneIndex:
     def _connect(self):
         return sqlite3.connect(self.db_path)
 
+    def list_all_scenes(self) -> list[dict]:
+        """返回所有场景记录。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, scene_key, description, image_path, hits, review_status, scene_type, created_at FROM scenes ORDER BY hits DESC"
+            ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "scene_key": row[1],
+                "description": row[2],
+                "image_path": row[3],
+                "hits": row[4],
+                "review_status": row[5],
+                "scene_type": row[6],
+                "created_at": row[7],
+            }
+            for row in rows
+        ]
+
     def _init_db(self):
         with self._connect() as conn:
             conn.execute(
@@ -590,6 +610,7 @@ class SceneIndex:
         name: str = "",
         model_name: str = "",
         recognize_cost: float = 0.0,
+        review_status: int = 0,
     ) -> int:
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         # scene_key 存人可读的名称，dhash 存 hash 值
@@ -599,9 +620,9 @@ class SceneIndex:
                 """
                 INSERT INTO scenes (
                     scene_key, dhash, ahash, description, image_path,
-                    width, height, model_name, recognize_cost, created_at, updated_at
+                    width, height, model_name, recognize_cost, review_status, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     scene_key,
@@ -613,11 +634,59 @@ class SceneIndex:
                     fingerprint["height"],
                     model_name,
                     recognize_cost,
+                    review_status,
                     now,
                     now,
                 ),
             )
             return int(cur.lastrowid)
+
+    def register_from_review(
+        self,
+        image_path: Path,
+        scene_name: str = "",
+        description: str = "",
+        threshold: float = 0.96,
+    ) -> dict:
+        """
+        将人工审核通过的场景注册到 hash 索引。
+        如果已有相似度 >= threshold 的记录，只增加 hits 不重复插入。
+        返回 {registered: bool, scene_id: int, existed: bool, confidence: float}
+        """
+        image_path = Path(image_path)
+        if not image_path.exists():
+            return {"registered": False, "error": "image not found", "confidence": 0.0}
+
+        fp = image_fingerprint(image_path)
+        best = self.find_best(fp)
+
+        if best and best["confidence"] >= threshold:
+            # 已有足够相似的记录，增加命中计数
+            self._record_hit(best["id"])
+            return {
+                "registered": True,
+                "scene_id": best["id"],
+                "existed": True,
+                "confidence": best["confidence"],
+                "scene_key": best["scene_key"],
+            }
+
+        # 插入新记录，标记为人工审核通过（review_status=1）
+        scene_id = self._insert_scene(
+            image_path=image_path,
+            fingerprint=fp,
+            description=description,
+            name=scene_name,
+            model_name="human_review",
+            review_status=1,
+        )
+        return {
+            "registered": True,
+            "scene_id": scene_id,
+            "existed": False,
+            "confidence": 1.0,
+            "scene_key": scene_name if scene_name else fp["dhash"],
+        }
 
 
 # ── 兼容旧接口 ──────────────────────────────────────────────────────────────
