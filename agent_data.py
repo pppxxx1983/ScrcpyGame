@@ -49,6 +49,8 @@ class AgentDataManager:
         self._init_db()
         self.current_session_id: Optional[str] = None
         self.current_session_dir: Optional[Path] = None
+        self.current_session_events_path: Optional[Path] = None
+        self.current_session_meta_path: Optional[Path] = None
         self.click_counter = 0
 
     # ------------------------------------------------------------------
@@ -202,6 +204,9 @@ class AgentDataManager:
             except Exception:
                 pass
 
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ui_element_scene_id ON ui_element(scene_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ui_element_scene_key ON ui_element(scene_key)")
+
         cursor.execute(
             """
             CREATE TABLE IF NOT EXISTS physical_event (
@@ -230,6 +235,39 @@ class AgentDataManager:
             """
         )
 
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS runtime_rule (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule_key TEXT UNIQUE,
+                scene_id INTEGER,
+                scene_key TEXT,
+                element_id INTEGER,
+                element_name TEXT,
+                action_type TEXT,
+                action_effect TEXT,
+                user_intent TEXT,
+                bbox_json TEXT,
+                next_scene_id INTEGER,
+                next_scene_key TEXT,
+                source_event TEXT,
+                source TEXT,
+                confidence REAL,
+                hits INTEGER DEFAULT 0,
+                enabled INTEGER DEFAULT 1,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_runtime_rule_scene_id ON runtime_rule(scene_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_runtime_rule_scene_key ON runtime_rule(scene_key)")
+        # 兼容升级：添加 enabled 列
+        try:
+            cursor.execute("ALTER TABLE runtime_rule ADD COLUMN enabled INTEGER DEFAULT 1")
+        except Exception:
+            pass
+
         conn.commit()
         conn.close()
 
@@ -253,6 +291,8 @@ class AgentDataManager:
         self.current_session_dir = self.game_dir / "sessions" / ts
         (self.current_session_dir / "clicks").mkdir(parents=True, exist_ok=True)
         (self.current_session_dir / "frames").mkdir(parents=True, exist_ok=True)
+        self.current_session_events_path = self.current_session_dir / "operations.jsonl"
+        self.current_session_meta_path = self.current_session_dir / "recording_meta.json"
 
         video_path = self.game_dir / "raw_videos" / f"{ts}.mp4"
 
@@ -269,6 +309,8 @@ class AgentDataManager:
             "session_id": ts,
             "game_name": "my_game",
             "video_path": str(video_path),
+            "operations_path": str(self.current_session_events_path),
+            "recording_meta_path": str(self.current_session_meta_path),
             "created_at": datetime.now().isoformat(),
         }
         (self.current_session_dir / "session.json").write_text(
@@ -283,6 +325,8 @@ class AgentDataManager:
         """结束当前 session。"""
         self.current_session_id = None
         self.current_session_dir = None
+        self.current_session_events_path = None
+        self.current_session_meta_path = None
         self.click_counter = 0
 
     def is_session_active(self) -> bool:
@@ -572,7 +616,508 @@ class AgentDataManager:
         conn.close()
         return row_id
 
+    def list_ui_elements_for_scene(
+        self,
+        scene_id: Optional[int] = None,
+        scene_key: str = "",
+    ) -> List[Dict[str, Any]]:
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        if scene_id is not None:
+            rows = cursor.execute(
+                """
+                SELECT id, scene_id, scene_key, element_type, element_name, text,
+                       x1, y1, x2, y2, source, confidence, image_path,
+                       yolo_class_id, action_effect
+                FROM ui_element
+                WHERE scene_id = ?
+                ORDER BY confidence DESC, id DESC
+                """,
+                (scene_id,),
+            ).fetchall()
+        else:
+            rows = cursor.execute(
+                """
+                SELECT id, scene_id, scene_key, element_type, element_name, text,
+                       x1, y1, x2, y2, source, confidence, image_path,
+                       yolo_class_id, action_effect
+                FROM ui_element
+                WHERE scene_key = ?
+                ORDER BY confidence DESC, id DESC
+                """,
+                (scene_key,),
+            ).fetchall()
+        conn.close()
+        return [
+            {
+                "id": row[0],
+                "scene_id": row[1],
+                "scene_key": row[2],
+                "element_type": row[3],
+                "element_name": row[4],
+                "text": row[5],
+                "bbox_xyxy": [row[6], row[7], row[8], row[9]],
+                "source": row[10],
+                "confidence": row[11],
+                "image_path": row[12],
+                "yolo_class_id": row[13],
+                "action_effect": row[14],
+            }
+            for row in rows
+        ]
+
+    def upsert_runtime_rule(
+        self,
+        rule_key: str,
+        scene_id: Optional[int],
+        scene_key: str,
+        element_id: Optional[int],
+        element_name: str,
+        action_type: str,
+        action_effect: str,
+        user_intent: str,
+        bbox_xyxy: list[int],
+        next_scene_id: Optional[int],
+        next_scene_key: str,
+        source_event: str,
+        source: str,
+        confidence: float,
+    ) -> int:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            INSERT INTO runtime_rule (
+                rule_key, scene_id, scene_key, element_id, element_name,
+                action_type, action_effect, user_intent, bbox_json,
+                next_scene_id, next_scene_key, source_event, source,
+                confidence, updated_at, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(rule_key) DO UPDATE SET
+                scene_id=excluded.scene_id,
+                scene_key=excluded.scene_key,
+                element_id=excluded.element_id,
+                element_name=excluded.element_name,
+                action_type=excluded.action_type,
+                action_effect=excluded.action_effect,
+                user_intent=excluded.user_intent,
+                bbox_json=excluded.bbox_json,
+                next_scene_id=excluded.next_scene_id,
+                next_scene_key=excluded.next_scene_key,
+                source_event=excluded.source_event,
+                source=excluded.source,
+                confidence=excluded.confidence,
+                updated_at=excluded.updated_at
+            """,
+            (
+                rule_key,
+                scene_id,
+                scene_key,
+                element_id,
+                element_name,
+                action_type,
+                action_effect,
+                user_intent,
+                json.dumps(bbox_xyxy, ensure_ascii=False),
+                next_scene_id,
+                next_scene_key,
+                source_event,
+                source,
+                confidence,
+                now,
+                now,
+            ),
+        )
+        row = cursor.execute("SELECT id FROM runtime_rule WHERE rule_key = ?", (rule_key,)).fetchone()
+        conn.commit()
+        conn.close()
+        return int(row[0]) if row else int(cursor.lastrowid)
+
+    def list_runtime_rules_for_scene(
+        self,
+        scene_id: Optional[int] = None,
+        scene_key: str = "",
+    ) -> List[Dict[str, Any]]:
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        if scene_id is not None:
+            rows = cursor.execute(
+                """
+                SELECT id, rule_key, scene_id, scene_key, element_id, element_name,
+                       action_type, action_effect, user_intent, bbox_json,
+                       next_scene_id, next_scene_key, source_event, source,
+                       confidence, hits, enabled
+                FROM runtime_rule
+                WHERE scene_id = ?
+                ORDER BY confidence DESC, hits DESC, updated_at DESC
+                """,
+                (scene_id,),
+            ).fetchall()
+        else:
+            rows = cursor.execute(
+                """
+                SELECT id, rule_key, scene_id, scene_key, element_id, element_name,
+                       action_type, action_effect, user_intent, bbox_json,
+                       next_scene_id, next_scene_key, source_event, source,
+                       confidence, hits, enabled
+                FROM runtime_rule
+                WHERE scene_key = ?
+                ORDER BY confidence DESC, hits DESC, updated_at DESC
+                """,
+                (scene_key,),
+            ).fetchall()
+        conn.close()
+        results = []
+        for row in rows:
+            try:
+                bbox = json.loads(row[9] or "[]")
+            except Exception:
+                bbox = []
+            results.append({
+                "id": row[0],
+                "rule_key": row[1],
+                "scene_id": row[2],
+                "scene_key": row[3],
+                "element_id": row[4],
+                "element_name": row[5],
+                "action_type": row[6],
+                "action_effect": row[7],
+                "user_intent": row[8],
+                "bbox_xyxy": bbox,
+                "next_scene_id": row[10],
+                "next_scene_key": row[11],
+                "source_event": row[12],
+                "source": row[13],
+                "confidence": row[14],
+                "hits": row[15],
+                "enabled": bool(row[16]),
+            })
+        return results
+
+    def list_all_runtime_rules(
+        self,
+        search: str = "",
+        filter_enabled: Optional[bool] = None,
+    ) -> List[Dict[str, Any]]:
+        """列出所有 runtime_rule，支持搜索和启用状态过滤。"""
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        params = []
+        where_clauses = []
+        if search:
+            where_clauses.append(
+                "(rule_key LIKE ? OR scene_key LIKE ? OR element_name LIKE ? OR action_type LIKE ? OR action_effect LIKE ? OR user_intent LIKE ?)"
+            )
+            like = f"%{search}%"
+            params.extend([like, like, like, like, like, like])
+        if filter_enabled is not None:
+            where_clauses.append("enabled = ?")
+            params.append(1 if filter_enabled else 0)
+        where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+        rows = cursor.execute(
+            f"""
+            SELECT id, rule_key, scene_id, scene_key, element_id, element_name,
+                   action_type, action_effect, user_intent, bbox_json,
+                   next_scene_id, next_scene_key, source_event, source,
+                   confidence, hits, enabled, updated_at, created_at
+            FROM runtime_rule
+            {where_sql}
+            ORDER BY updated_at DESC
+            """,
+            params,
+        ).fetchall()
+        conn.close()
+        results = []
+        for row in rows:
+            try:
+                bbox = json.loads(row[9] or "[]")
+            except Exception:
+                bbox = []
+            results.append({
+                "id": row[0],
+                "rule_key": row[1],
+                "scene_id": row[2],
+                "scene_key": row[3],
+                "element_id": row[4],
+                "element_name": row[5],
+                "action_type": row[6],
+                "action_effect": row[7],
+                "user_intent": row[8],
+                "bbox_xyxy": bbox,
+                "next_scene_id": row[10],
+                "next_scene_key": row[11],
+                "source_event": row[12],
+                "source": row[13],
+                "confidence": row[14],
+                "hits": row[15],
+                "enabled": bool(row[16]),
+                "updated_at": row[17],
+                "created_at": row[18],
+            })
+        return results
+
+    def get_runtime_rule(self, rule_id: int) -> Optional[Dict[str, Any]]:
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        row = cursor.execute(
+            """
+            SELECT id, rule_key, scene_id, scene_key, element_id, element_name,
+                   action_type, action_effect, user_intent, bbox_json,
+                   next_scene_id, next_scene_key, source_event, source,
+                   confidence, hits, enabled
+            FROM runtime_rule
+            WHERE id = ?
+            """,
+            (rule_id,),
+        ).fetchone()
+        conn.close()
+        if not row:
+            return None
+        try:
+            bbox = json.loads(row[9] or "[]")
+        except Exception:
+            bbox = []
+        return {
+            "id": row[0],
+            "rule_key": row[1],
+            "scene_id": row[2],
+            "scene_key": row[3],
+            "element_id": row[4],
+            "element_name": row[5],
+            "action_type": row[6],
+            "action_effect": row[7],
+            "user_intent": row[8],
+            "bbox_xyxy": bbox,
+            "next_scene_id": row[10],
+            "next_scene_key": row[11],
+            "source_event": row[12],
+            "source": row[13],
+            "confidence": row[14],
+            "hits": row[15],
+            "enabled": bool(row[16]),
+        }
+
+    def update_runtime_rule(
+        self,
+        rule_id: int,
+        element_name: Optional[str] = None,
+        action_type: Optional[str] = None,
+        action_effect: Optional[str] = None,
+        user_intent: Optional[str] = None,
+        bbox_xyxy: Optional[list] = None,
+        next_scene_key: Optional[str] = None,
+        confidence: Optional[float] = None,
+        enabled: Optional[bool] = None,
+    ) -> bool:
+        """更新 runtime_rule 的指定字段。"""
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        fields = []
+        params = []
+        if element_name is not None:
+            fields.append("element_name = ?")
+            params.append(element_name)
+        if action_type is not None:
+            fields.append("action_type = ?")
+            params.append(action_type)
+        if action_effect is not None:
+            fields.append("action_effect = ?")
+            params.append(action_effect)
+        if user_intent is not None:
+            fields.append("user_intent = ?")
+            params.append(user_intent)
+        if bbox_xyxy is not None:
+            fields.append("bbox_json = ?")
+            params.append(json.dumps(bbox_xyxy, ensure_ascii=False))
+        if next_scene_key is not None:
+            fields.append("next_scene_key = ?")
+            params.append(next_scene_key)
+        if confidence is not None:
+            fields.append("confidence = ?")
+            params.append(confidence)
+        if enabled is not None:
+            fields.append("enabled = ?")
+            params.append(1 if enabled else 0)
+        if not fields:
+            conn.close()
+            return False
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        fields.append("updated_at = ?")
+        params.append(now)
+        params.append(rule_id)
+        cursor.execute(
+            f"UPDATE runtime_rule SET {', '.join(fields)} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+        conn.close()
+        return True
+
+    def delete_runtime_rule(self, rule_id: int) -> bool:
+        """删除 runtime_rule。"""
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM runtime_rule WHERE id = ?", (rule_id,))
+        changed = cursor.rowcount > 0
+        conn.commit()
+        conn.close()
+        return changed
+
+    def toggle_runtime_rule_enabled(self, rule_id: int, enabled: bool) -> bool:
+        return self.update_runtime_rule(rule_id, enabled=enabled)
+
+    def get_runtime_rule_stats(self) -> Dict[str, Any]:
+        """返回规则统计信息。"""
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        total = cursor.execute("SELECT COUNT(*) FROM runtime_rule").fetchone()[0]
+        enabled = cursor.execute("SELECT COUNT(*) FROM runtime_rule WHERE enabled = 1").fetchone()[0]
+        disabled = cursor.execute("SELECT COUNT(*) FROM runtime_rule WHERE enabled = 0").fetchone()[0]
+        total_hits = cursor.execute("SELECT COALESCE(SUM(hits), 0) FROM runtime_rule").fetchone()[0]
+        conn.close()
+        return {
+            "total": total,
+            "enabled": enabled,
+            "disabled": disabled,
+            "total_hits": total_hits,
+        }
+
+    def list_runtime_rules_top_hits(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """返回命中次数最高的规则列表。"""
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        rows = cursor.execute(
+            """
+            SELECT rule_key, scene_key, element_name, action_type, hits, enabled, confidence
+            FROM runtime_rule
+            ORDER BY hits DESC, confidence DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        conn.close()
+        return [
+            {
+                "rule_key": row[0],
+                "scene_key": row[1],
+                "element_name": row[2],
+                "action_type": row[3],
+                "hits": row[4],
+                "enabled": bool(row[5]),
+                "confidence": row[6],
+            }
+            for row in rows
+        ]
+
     def get_video_path(self) -> Optional[Path]:
         if self.current_session_id:
             return self.game_dir / "raw_videos" / f"{self.current_session_id}.mp4"
         return None
+
+    def list_actions(self) -> List[Dict[str, Any]]:
+        """返回所有 action 记录（场景转移图数据）。"""
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        rows = cursor.execute(
+            """
+            SELECT id, from_scene_id, to_scene_id, action_name, x, y,
+                   success_count, fail_count
+            FROM action
+            ORDER BY success_count DESC, id DESC
+            """
+        ).fetchall()
+        conn.close()
+        return [
+            {
+                "id": row[0],
+                "from_scene_id": row[1],
+                "to_scene_id": row[2],
+                "action_name": row[3],
+                "x": row[4],
+                "y": row[5],
+                "success_count": row[6],
+                "fail_count": row[7],
+            }
+            for row in rows
+        ]
+
+    def get_action_stats(self) -> Dict[str, Any]:
+        """返回 action 统计。"""
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+        total = cursor.execute("SELECT COUNT(*) FROM action").fetchone()[0]
+        total_success = cursor.execute("SELECT COALESCE(SUM(success_count), 0) FROM action").fetchone()[0]
+        total_fail = cursor.execute("SELECT COALESCE(SUM(fail_count), 0) FROM action").fetchone()[0]
+        conn.close()
+        return {
+            "total_actions": total,
+            "total_success": total_success,
+            "total_fail": total_fail,
+            "success_rate": round(total_success / max(1, total_success + total_fail), 4),
+        }
+
+    def get_data_quality_stats(self) -> Dict[str, Any]:
+        """返回数据质量综合统计。"""
+        conn = sqlite3.connect(str(self.db_path))
+        cursor = conn.cursor()
+
+        # 事件统计
+        total_events = cursor.execute("SELECT COUNT(*) FROM click_event").fetchone()[0]
+        events_with_scene = cursor.execute(
+            "SELECT COUNT(*) FROM click_event WHERE before_scene_id IS NOT NULL"
+        ).fetchone()[0]
+
+        # UI 元素统计
+        total_elements = cursor.execute("SELECT COUNT(*) FROM ui_element").fetchone()[0]
+        source_dist = cursor.execute(
+            "SELECT source, COUNT(*) FROM ui_element GROUP BY source"
+        ).fetchall()
+
+        # 场景统计
+        total_scenes = cursor.execute("SELECT COUNT(*) FROM scene").fetchone()[0]
+
+        # 规则统计
+        total_rules = cursor.execute("SELECT COUNT(*) FROM runtime_rule").fetchone()[0]
+        enabled_rules = cursor.execute(
+            "SELECT COUNT(*) FROM runtime_rule WHERE enabled = 1"
+        ).fetchone()[0]
+        total_hits = cursor.execute(
+            "SELECT COALESCE(SUM(hits), 0) FROM runtime_rule"
+        ).fetchone()[0]
+
+        # Action 统计
+        total_actions = cursor.execute("SELECT COUNT(*) FROM action").fetchone()[0]
+        total_success = cursor.execute(
+            "SELECT COALESCE(SUM(success_count), 0) FROM action"
+        ).fetchone()[0]
+        total_fail = cursor.execute(
+            "SELECT COALESCE(SUM(fail_count), 0) FROM action"
+        ).fetchone()[0]
+
+        conn.close()
+        return {
+            "events": {
+                "total": total_events,
+                "with_scene": events_with_scene,
+                "scene_coverage": round(events_with_scene / max(1, total_events), 4),
+            },
+            "elements": {
+                "total": total_elements,
+                "source_distribution": {row[0] or "unknown": row[1] for row in source_dist},
+            },
+            "scenes": {"total": total_scenes},
+            "rules": {
+                "total": total_rules,
+                "enabled": enabled_rules,
+                "disabled": total_rules - enabled_rules,
+                "total_hits": total_hits,
+            },
+            "actions": {
+                "total": total_actions,
+                "success": total_success,
+                "fail": total_fail,
+                "success_rate": round(total_success / max(1, total_success + total_fail), 4),
+            },
+        }

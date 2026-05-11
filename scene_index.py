@@ -483,6 +483,26 @@ class SceneIndex:
     def _connect(self):
         return sqlite3.connect(self.db_path)
 
+    def list_all_scenes(self) -> list[dict]:
+        """返回所有场景记录。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, scene_key, description, image_path, hits, review_status, scene_type, created_at FROM scenes ORDER BY hits DESC"
+            ).fetchall()
+        return [
+            {
+                "id": row[0],
+                "scene_key": row[1],
+                "description": row[2],
+                "image_path": row[3],
+                "hits": row[4],
+                "review_status": row[5],
+                "scene_type": row[6],
+                "created_at": row[7],
+            }
+            for row in rows
+        ]
+
     def _init_db(self):
         with self._connect() as conn:
             conn.execute(
