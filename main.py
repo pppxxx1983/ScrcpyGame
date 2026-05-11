@@ -1139,6 +1139,15 @@ class MainWindow(QMainWindow):
         )
         left_layout.addWidget(json_view)
 
+        if folder.name.startswith("physical_"):
+            actions_row = QHBoxLayout()
+            btn_approve = QPushButton("Approve + Train", left_panel)
+            btn_approve.setEnabled(data.get("status") != "review_approved")
+            btn_approve.setToolTip("Approve this YOLO candidate, add it to the training set, then start YOLO training.")
+            btn_approve.clicked.connect(lambda checked=False, f=folder: self._approve_physical_event(f))
+            actions_row.addWidget(btn_approve)
+            left_layout.addLayout(actions_row)
+
         detail_holder = QWidget(page)
         detail_layout = QVBoxLayout(detail_holder)
         detail_layout.setContentsMargins(0, 0, 0, 0)
@@ -1973,21 +1982,9 @@ class MainWindow(QMainWindow):
             classes_text = self._yolo_classes_text()
             (local_yolo_dir / "classes.txt").write_text(classes_text, encoding="utf-8")
 
-            dataset_images = GAME_DATA_DIR / "yolo_events" / "images" / "train"
-            dataset_labels = GAME_DATA_DIR / "yolo_events" / "labels" / "train"
-            dataset_images.mkdir(parents=True, exist_ok=True)
-            dataset_labels.mkdir(parents=True, exist_ok=True)
-            dataset_image = dataset_images / f"{event_key}.png"
-            dataset_label = dataset_labels / f"{event_key}.txt"
-            shutil.copy2(str(image_path), str(dataset_image))
-            dataset_label.write_text(label_text, encoding="utf-8")
-            (GAME_DATA_DIR / "yolo_events" / "classes.txt").write_text(classes_text, encoding="utf-8")
-            (GAME_DATA_DIR / "yolo_events" / "data.yaml").write_text(
-                self._yolo_data_yaml(),
-                encoding="utf-8",
-            )
-
             return {
+                "status": "candidate",
+                "review_state": "pending",
                 "class_id": normalized_objects[0]["class_id"] if normalized_objects else 0,
                 "class_name": normalized_objects[0]["class_name"] if normalized_objects else class_name,
                 "image_width": width,
@@ -1997,12 +1994,138 @@ class MainWindow(QMainWindow):
                 "label": label_text.strip(),
                 "local_image": str(local_image),
                 "local_label": str(local_label),
-                "dataset_image": str(dataset_image),
-                "dataset_label": str(dataset_label),
             }
         except Exception as e:
             LogManager().append(f"[WARN] write yolo annotation failed: {e}")
             return {"error": str(e)}
+
+    def _promote_yolo_event_annotation(self, op_dir: Path, data: dict) -> dict:
+        try:
+            import shutil
+            from datetime import datetime
+            from agent_data import GAME_DATA_DIR
+
+            yolo = data.get("yolo") if isinstance(data.get("yolo"), dict) else {}
+            local_image_value = yolo.get("local_image") or ""
+            local_label_value = yolo.get("local_label") or ""
+            local_image = Path(local_image_value) if local_image_value else None
+            local_label = Path(local_label_value) if local_label_value else None
+            if local_image is None or local_label is None or not local_image.exists() or not local_label.exists():
+                yolo = self._write_yolo_event_annotation(op_dir, data)
+                local_image_value = yolo.get("local_image") or ""
+                local_label_value = yolo.get("local_label") or ""
+                local_image = Path(local_image_value) if local_image_value else None
+                local_label = Path(local_label_value) if local_label_value else None
+            if local_image is None or local_label is None or not local_image.exists() or not local_label.exists():
+                return {"status": "error", "error": "local yolo candidate missing"}
+
+            event_key = op_dir.name
+            dataset_images = GAME_DATA_DIR / "yolo_events" / "images" / "train"
+            dataset_labels = GAME_DATA_DIR / "yolo_events" / "labels" / "train"
+            dataset_images.mkdir(parents=True, exist_ok=True)
+            dataset_labels.mkdir(parents=True, exist_ok=True)
+
+            dataset_image = dataset_images / f"{event_key}{local_image.suffix or '.png'}"
+            dataset_label = dataset_labels / f"{event_key}.txt"
+            shutil.copy2(str(local_image), str(dataset_image))
+            shutil.copy2(str(local_label), str(dataset_label))
+            (GAME_DATA_DIR / "yolo_events" / "classes.txt").write_text(
+                self._yolo_classes_text(),
+                encoding="utf-8",
+            )
+            (GAME_DATA_DIR / "yolo_events" / "data.yaml").write_text(
+                self._yolo_data_yaml(),
+                encoding="utf-8",
+            )
+
+            promoted = dict(yolo)
+            promoted.update({
+                "status": "approved",
+                "review_state": "approved",
+                "approved_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3],
+                "dataset_image": str(dataset_image),
+                "dataset_label": str(dataset_label),
+            })
+            return promoted
+        except Exception as e:
+            LogManager().append(f"[WARN] promote yolo annotation failed: {e}")
+            return {"status": "error", "error": str(e)}
+
+    def _approve_physical_event(self, folder: Path):
+        index_path = folder / "index.json"
+        if not index_path.exists():
+            self._set_status(f"YOLO review: index not found {folder.name}")
+            return
+        try:
+            data = json.loads(index_path.read_text(encoding="utf-8"))
+            promoted = self._promote_yolo_event_annotation(folder, data)
+            if promoted.get("status") == "error":
+                self._set_status(f"YOLO review: approve failed - {promoted.get('error')}")
+                return
+
+            data["yolo"] = promoted
+            data["status"] = "review_approved"
+            index_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+            try:
+                from agent_data import AgentDataManager
+
+                AgentDataManager().record_physical_event(
+                    event_key=folder.name,
+                    action_type=data.get("action_type", ""),
+                    timestamp_ms=int(time.time() * 1000),
+                    duration_ms=int(data.get("duration_ms") or 0),
+                    touch=data.get("touch", {}),
+                    folder_path=folder,
+                    images=data.get("images", {}),
+                    index_path=index_path,
+                    yolo=promoted,
+                )
+            except Exception as e:
+                LogManager().append(f"[WARN] update approved physical event db failed: {e}")
+
+            self._set_status(f"YOLO review: approved {folder.name}, training started")
+            self._bridge.events_changed.emit()
+            self._open_physical_event_tab(folder)
+            self._start_yolo_training_async()
+        except Exception as e:
+            self._set_status(f"YOLO review: approve failed - {e}")
+
+    def _start_yolo_training_async(self):
+        def _train():
+            try:
+                from agent_data import GAME_DATA_DIR
+                from ultralytics import YOLO
+
+                yolo_dir = GAME_DATA_DIR / "yolo_events"
+                data_yaml = yolo_dir / "data.yaml"
+                if not data_yaml.exists():
+                    LogManager().append("[YOLO] skip train: data.yaml missing")
+                    return
+                label_count = len(list((yolo_dir / "labels" / "train").glob("*.txt")))
+                if label_count <= 0:
+                    LogManager().append("[YOLO] skip train: no approved labels")
+                    return
+
+                best = yolo_dir / "runs" / "train" / "weights" / "best.pt"
+                model_path = str(best) if best.exists() else "yolo11n.pt"
+                LogManager().append(f"[YOLO] train start labels={label_count} model={model_path}")
+                model = YOLO(model_path)
+                model.train(
+                    data=str(data_yaml),
+                    epochs=20,
+                    imgsz=640,
+                    project=str(yolo_dir / "runs"),
+                    name="train",
+                    exist_ok=True,
+                )
+                LogManager().append("[YOLO] train done")
+            except ImportError:
+                LogManager().append("[YOLO] ultralytics not installed; run: pip install ultralytics")
+            except Exception as e:
+                LogManager().append(f"[YOLO] train failed: {e}")
+
+        threading.Thread(target=_train, daemon=True).start()
 
     def _load_yolo_classes(self) -> list[str]:
         try:
@@ -2064,6 +2187,71 @@ class MainWindow(QMainWindow):
             max(1, min(height, int(y2))),
         ]
 
+    def _detect_yolo_objects(self, op_dir: Path, data: dict) -> dict:
+        try:
+            from agent_data import GAME_DATA_DIR
+            from ultralytics import YOLO
+
+            before_name = data.get("images", {}).get("before")
+            if not before_name:
+                return {"status": "no_before_image", "objects": []}
+            before_path = op_dir / before_name
+            if not before_path.exists():
+                return {"status": "before_image_missing", "objects": []}
+
+            model_path = GAME_DATA_DIR / "yolo_events" / "runs" / "train" / "weights" / "best.pt"
+            if not model_path.exists():
+                return {"status": "no_model", "objects": []}
+
+            model = YOLO(str(model_path))
+            results = model.predict(str(before_path), conf=0.25, verbose=False)
+            objects = []
+            for result in results:
+                names = getattr(result, "names", {}) or {}
+                boxes = getattr(result, "boxes", None)
+                if boxes is None:
+                    continue
+                for box in boxes:
+                    xyxy = box.xyxy[0].tolist()
+                    cls_id = int(box.cls[0].item()) if box.cls is not None else 0
+                    conf = float(box.conf[0].item()) if box.conf is not None else 0.0
+                    objects.append({
+                        "class_id": cls_id,
+                        "class_name": str(names.get(cls_id, f"class_{cls_id}")),
+                        "bbox_xyxy": [int(v) for v in xyxy],
+                        "confidence": round(conf, 4),
+                        "source": "yolo",
+                    })
+            return {"status": "ok", "model": str(model_path), "objects": objects}
+        except ImportError:
+            return {"status": "ultralytics_missing", "objects": []}
+        except Exception as e:
+            LogManager().append(f"[WARN] yolo detect failed: {e}")
+            return {"status": "error", "objects": [], "error": str(e)}
+
+    def _yolo_object_at_touch(self, data: dict, pad: int = 8) -> dict | None:
+        touch = data.get("touch", {})
+        start = touch.get("frame_start", {})
+        try:
+            x = int(start.get("x", 0))
+            y = int(start.get("y", 0))
+        except Exception:
+            return None
+
+        best = None
+        for obj in data.get("detected_yolo_objects", {}).get("objects", []):
+            bbox = obj.get("bbox_xyxy")
+            if not bbox or len(bbox) != 4:
+                continue
+            x1, y1, x2, y2 = [int(v) for v in bbox]
+            if x1 - pad <= x <= x2 + pad and y1 - pad <= y <= y2 + pad:
+                area = max(1, (x2 - x1) * (y2 - y1))
+                score = float(obj.get("confidence") or 0.0)
+                rank = (score, -area)
+                if best is None or rank > best[0]:
+                    best = (rank, obj)
+        return best[1] if best else None
+
     def _analyze_click_target(self, op_dir: Path, data: dict, scene_result: dict | None) -> dict:
         try:
             from PIL import Image
@@ -2084,6 +2272,23 @@ class MainWindow(QMainWindow):
                 crop_dir.mkdir(parents=True, exist_ok=True)
                 crop_path = crop_dir / "click_target.png"
                 img.crop((x1, y1, x2, y2)).save(str(crop_path))
+
+            yolo_hit = self._yolo_object_at_touch(data)
+            if yolo_hit:
+                bbox = [int(v) for v in yolo_hit["bbox_xyxy"]]
+                element_name = yolo_hit.get("class_name") or "tap_target"
+                class_id = self._ensure_yolo_class(element_name)
+                return {
+                    "status": "yolo_matched",
+                    "element_name": element_name,
+                    "element_type": "ui_element",
+                    "action_effect": "",
+                    "bbox_xyxy": bbox,
+                    "crop_image": str(crop_path),
+                    "source": "yolo",
+                    "yolo_class_id": class_id,
+                    "confidence": yolo_hit.get("confidence", 0.0),
+                }
 
             fingerprint = image_fingerprint(crop_path)
             dm = AgentDataManager()
@@ -2339,16 +2544,20 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 data["after_scene_index"] = {"error": str(e)}
 
+        data["detected_yolo_objects"] = self._detect_yolo_objects(op_dir, data)
         data["click_target"] = self._analyze_click_target(
             op_dir,
             data,
             data.get("scene_index") if isinstance(data.get("scene_index"), dict) else None,
         )
-        data["gpt_yolo_objects"] = self._analyze_yolo_objects_with_gpt55(
-            op_dir,
-            data,
-            data.get("scene_index") if isinstance(data.get("scene_index"), dict) else None,
-        )
+        if data.get("click_target", {}).get("status") != "yolo_matched":
+            data["gpt_yolo_objects"] = self._analyze_yolo_objects_with_gpt55(
+                op_dir,
+                data,
+                data.get("scene_index") if isinstance(data.get("scene_index"), dict) else None,
+            )
+        else:
+            data["gpt_yolo_objects"] = {"status": "skipped_yolo_hit", "objects": []}
         data["yolo"] = self._write_yolo_event_annotation(op_dir, data)
         try:
             from agent_data import AgentDataManager
