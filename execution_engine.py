@@ -15,8 +15,6 @@ from typing import Callable, Optional
 from PySide6.QtCore import QObject, Signal
 
 from agent_data import AgentDataManager
-from ocr_client import OCRClient
-from aliyun_ocr_client import AliyunOCRClient
 from log_manager import LogManager
 from scene_index import (
     SceneIndex, image_fingerprint, _draw_name_on_image,
@@ -57,11 +55,6 @@ class ExecutionEngine(QObject):
         self._recognize_thread = None       # 场景识别循环线程
         self._recognize_interval = 2.0      # 每隔 2 秒识别一次
         # 延迟后台预热 OCR 引擎，避免和主窗口初始化竞争 CPU
-        def _delayed_warmup():
-            time.sleep(3)
-            self._warm_up_ocr()
-        threading.Thread(target=_delayed_warmup, daemon=True).start()
-
     # ------------------------------------------------------------------
     # Session / 录制 控制
     # ------------------------------------------------------------------
@@ -391,12 +384,3 @@ class ExecutionEngine(QObject):
         except Exception as e:
             LogManager().append(f"[WARN] dump frame failed: {e}")
             return None
-
-    @staticmethod
-    def _warm_up_ocr():
-        """后台预热 OCR 引擎，避免首次识别时因模型加载造成感知卡顿。"""
-        try:
-            _ = OCRClient()
-            LogManager().append("[Engine] OCR 引擎预热完成")
-        except Exception as e:
-            LogManager().append(f"[WARN] OCR 预热失败: {e}")

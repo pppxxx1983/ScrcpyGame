@@ -5,12 +5,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QDialog,
+    QTabWidget,
     QTableWidget,
     QTableWidgetItem,
 )
-from PySide6.QtGui import QColor, QBrush
-from ui.widgets.charts import BarChartWidget, PieChartWidget
-from log_manager import LogManager
+from PySide6.QtGui import QColor
 
 class RuntimeRuleDebugDialog(QDialog):
     """Runtime Rule 命中调试面板：展示命中原因、候选规则、分数。"""
@@ -292,150 +291,4 @@ class RuntimeRuleDebugDialog(QDialog):
         self.result_label.setText(f"最终命中结果: {final_status}")
 
 
-class RuleStatsDialog(QDialog):
-    """规则命中率统计和失败率趋势面板。"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("规则命中率统计")
-        self.resize(900, 640)
-        self.setStyleSheet("background-color: #1e1e1e; color: #cccccc;")
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(10)
-
-        # 顶部统计卡片行
-        cards = QHBoxLayout()
-        cards.setSpacing(10)
-        self.card_widgets = []
-        for title, color in [
-            ("总规则", "#0e639c"),
-            ("已启用", "#6a9955"),
-            ("总命中", "#ffcc00"),
-            ("成功率", "#4ec9b0"),
-        ]:
-            card = self._build_card(title, "0", color)
-            cards.addWidget(card)
-            self.card_widgets.append(card)
-        layout.addLayout(cards)
-
-        # 图表行
-        charts = QHBoxLayout()
-        charts.setSpacing(10)
-
-        self.bar_chart = BarChartWidget([], "规则命中排行 TOP10")
-        charts.addWidget(self.bar_chart, 1)
-
-        right_charts = QVBoxLayout()
-        right_charts.setSpacing(10)
-        self.pie_enabled = PieChartWidget([], "规则启用分布")
-        self.pie_action = PieChartWidget([], "Action 成功/失败")
-        right_charts.addWidget(self.pie_enabled)
-        right_charts.addWidget(self.pie_action)
-        charts.addLayout(right_charts)
-        layout.addLayout(charts, 1)
-
-        # 底部规则明细表
-        self.rule_table = QTableWidget()
-        self.rule_table.setColumnCount(5)
-        self.rule_table.setHorizontalHeaderLabels(["规则 Key", "场景", "元素", "命中", "状态"])
-        self.rule_table.setStyleSheet(
-            "QTableWidget { background-color: #252526; color: #cccccc; gridline-color: #444444; }"
-            "QHeaderView::section { background-color: #333333; color: #cccccc; padding: 4px; }"
-            "QTableWidget::item:selected { background-color: #0e639c; }"
-        )
-        self.rule_table.setColumnWidth(0, 240)
-        self.rule_table.setColumnWidth(1, 100)
-        self.rule_table.setColumnWidth(2, 100)
-        self.rule_table.setColumnWidth(3, 60)
-        self.rule_table.horizontalHeader().setStretchLastSection(True)
-        self.rule_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.rule_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.rule_table.setMaximumHeight(180)
-        layout.addWidget(self.rule_table)
-
-        btn_refresh = QPushButton("刷新数据")
-        btn_refresh.setStyleSheet(
-            "QPushButton { background-color: #0e639c; color: white; padding: 6px; }"
-            "QPushButton:hover { background-color: #1177bb; }"
-        )
-        btn_refresh.clicked.connect(self._load_data)
-        layout.addWidget(btn_refresh)
-
-        self._load_data()
-
-    def _build_card(self, title: str, value: str, color: str) -> QWidget:
-        card = QWidget()
-        card.setStyleSheet(f"background-color: #252526; border-left: 4px solid {color}; padding: 8px;")
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(8, 6, 8, 6)
-        card_layout.setSpacing(4)
-        lbl_title = QLabel(title)
-        lbl_title.setStyleSheet("color: #888888; font-size: 11px;")
-        card_layout.addWidget(lbl_title)
-        lbl_value = QLabel(value)
-        lbl_value.setStyleSheet(f"color: {color}; font-size: 22px; font-weight: bold;")
-        card_layout.addWidget(lbl_value)
-        card._value_label = lbl_value
-        return card
-
-    def _update_card(self, index: int, value: str):
-        if 0 <= index < len(self.card_widgets):
-            self.card_widgets[index]._value_label.setText(value)
-
-    def _load_data(self):
-        try:
-            from agent_data import AgentDataManager
-            dm = AgentDataManager()
-
-            # 规则统计
-            rule_stats = dm.get_runtime_rule_stats()
-            self._update_card(0, str(rule_stats.get("total", 0)))
-            self._update_card(1, str(rule_stats.get("enabled", 0)))
-            self._update_card(2, str(rule_stats.get("total_hits", 0)))
-
-            # Action 统计
-            action_stats = dm.get_action_stats()
-            total = action_stats.get("total_actions", 0)
-            success = action_stats.get("total_success", 0)
-            fail = action_stats.get("total_fail", 0)
-            success_rate = action_stats.get("success_rate", 0)
-            self._update_card(3, f"{success_rate * 100:.1f}%")
-
-            # 规则命中排行柱状图
-            top_rules = dm.list_runtime_rules_top_hits(10)
-            bar_data = [
-                {"label": r.get("element_name", "")[:6] or str(i + 1), "value": r.get("hits", 0)}
-                for i, r in enumerate(top_rules)
-            ]
-            self.bar_chart.set_data(bar_data)
-
-            # 启用/禁用饼图
-            enabled = rule_stats.get("enabled", 0)
-            disabled = rule_stats.get("disabled", 0)
-            self.pie_enabled.set_data([
-                {"label": "已启用", "value": enabled},
-                {"label": "已禁用", "value": disabled},
-            ])
-
-            # Action 成功/失败饼图
-            self.pie_action.set_data([
-                {"label": "成功", "value": success},
-                {"label": "失败", "value": fail},
-            ])
-
-            # 规则明细表
-            self.rule_table.setRowCount(len(top_rules))
-            for row, r in enumerate(top_rules):
-                self.rule_table.setItem(row, 0, QTableWidgetItem(r.get("rule_key", "")[:40]))
-                self.rule_table.setItem(row, 1, QTableWidgetItem(r.get("scene_key", "")[:12]))
-                self.rule_table.setItem(row, 2, QTableWidgetItem(r.get("element_name", "")[:12]))
-                self.rule_table.setItem(row, 3, QTableWidgetItem(str(r.get("hits", 0))))
-                status = "启用" if r.get("enabled") else "禁用"
-                item = QTableWidgetItem(status)
-                item.setForeground(QBrush(QColor("#6a9955" if r.get("enabled") else "#f44747")))
-                self.rule_table.setItem(row, 4, item)
-
-        except Exception as e:
-            LogManager().append(f"[RuleStats] 加载数据失败: {e}")
 
