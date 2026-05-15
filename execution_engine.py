@@ -10,14 +10,47 @@ import time
 import json
 from pathlib import Path
 from datetime import datetime
-from typing import Callable, Optional
+from typing import Callable, Optional, Dict
 
 from PySide6.QtCore import QObject, Signal
 
 from agent_data import AgentDataManager
 from log_manager import LogManager
 from analysis.scene_recognizer import SceneRecognizer
-from analysis.scene_classes import SceneLevel, SceneState
+from analysis.scene_classes import SceneLevel, SceneState, SceneFactory
+
+
+class SceneThread(threading.Thread):
+    """场景线程 - 每个场景层级独立线程，默认空跑，被激活时执行场景任务。"""
+
+    def __init__(self, scene_level: str, display_name: str):
+        super().__init__(name=f"Scene-{display_name}", daemon=True)
+        self.scene_level = scene_level
+        self.display_name = display_name
+        self._running = False
+        self._active = False
+        self._lock = threading.Lock()
+
+    def run(self):
+        self._running = True
+        while self._running:
+            with self._lock:
+                active = self._active
+            if active:
+                LogManager().append(f"[SceneThread] {self.display_name} 线程激活执行")
+                # TODO: 在这里扩展场景特定的执行逻辑
+                with self._lock:
+                    self._active = False
+            else:
+                # 空跑：短暂休眠后继续检查
+                time.sleep(0.1)
+
+    def activate(self):
+        with self._lock:
+            self._active = True
+
+    def stop(self):
+        self._running = False
 
 
 class ExecutionEngine(QObject):
@@ -53,11 +86,18 @@ class ExecutionEngine(QObject):
         self._current_frame = None          # 最新视频帧，由 write_frame 更新
         self._recognize_thread = None       # 场景识别循环线程
         self._recognize_interval = 2.0      # 每隔 2 秒识别一次
-        self._last_queued_scene_name = ""   # 上次加入任务队列的场景名
+        self._scene_threads: Dict[str, SceneThread] = {}
+        self._init_scene_threads()
         # 延迟后台预热 OCR 引擎，避免和主窗口初始化竞争 CPU
     # ------------------------------------------------------------------
     # Session / 录制 控制
     # ------------------------------------------------------------------
+    def _init_scene_threads(self):
+        """为所有场景层级预创建线程（此时不启动，只创建对象）。"""
+        for level, scene_class in SceneFactory._level_map.items():
+            thread = SceneThread(level.value, scene_class.DISPLAY_NAME)
+            self._scene_threads[level.value] = thread
+
     def is_running(self) -> bool:
         return self._running
 
@@ -88,7 +128,13 @@ class ExecutionEngine(QObject):
 
                 self._running = True
                 self.task_cleared.emit()
-                self._last_queued_scene_name = ""
+
+                # 启动所有场景线程（空跑），并将场景名插入任务队列
+                for thread in self._scene_threads.values():
+                    if not thread.is_alive():
+                        thread.start()
+                    self.task_added.emit(thread.display_name, True)
+
                 self.status_changed.emit(f"开始执行 Session {session_id}", "#4ec9b0")
                 LogManager().append(f"[Engine] 开始执行 Session {session_id}")
 
@@ -101,8 +147,7 @@ class ExecutionEngine(QObject):
         threading.Thread(target=_exec, daemon=True).start()
 
     def stop(self):
-        """停止执行：结束录制 + 结束 Session + 停止识别循环。
-        UnknownFolderProcessor 常驻后台，不随执行状态启停。"""
+        """停止执行：结束录制 + 结束 Session + 停止识别循环 + 停止所有场景线程。"""
         if self._video_writer is not None:
             try:
                 self._write_recording_meta(finished=True)
@@ -112,6 +157,11 @@ class ExecutionEngine(QObject):
             self._video_writer = None
 
         self._running = False
+
+        # 停止所有场景线程
+        for thread in self._scene_threads.values():
+            thread.stop()
+
         self.dm.end_session()
         self.status_changed.emit("执行已停止", "#ce9178")
         LogManager().append("[Engine] 执行已停止")
@@ -294,18 +344,21 @@ class ExecutionEngine(QObject):
             scene = recognizer.recognize_scene(temp_path)
 
             if scene:
-                # 获取场景名称
+                # 获取场景信息
                 level_name = scene.LEVEL.value
-                short_name = level_name[:4] if level_name else "未知"
+                display_name = SceneFactory.get_class(scene.LEVEL).DISPLAY_NAME
+                short_name = display_name[:4] if display_name else "未知"
 
                 self.scene_name_changed.emit(short_name)
                 self.status_changed.emit(f"识别场景: {short_name}", "#47f447")
 
-                # 新场景变化时插入任务队列
-                if short_name != self._last_queued_scene_name:
-                    self.task_added.emit(short_name, True)
-                    self.task_done.emit(short_name, True)
-                    self._last_queued_scene_name = short_name
+                # 激活对应场景线程
+                thread = self._scene_threads.get(level_name)
+                if thread:
+                    thread.activate()
+
+                # 将对应场景任务标记为完成
+                self.task_done.emit(display_name, True)
             else:
                 # 识别失败
                 self.scene_name_changed.emit("")
