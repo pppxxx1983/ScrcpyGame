@@ -96,12 +96,10 @@ class ExecutionEngine(QObject):
                 self._write_recording_meta(finished=False)
 
                 self._running = True
-                self.task_cleared.emit()
 
-                # 启动所有场景线程（空跑），并将场景名插入任务队列
+                # 启动所有场景线程（空跑）
                 for level, scene_class in SceneFactory._level_map.items():
                     scene_class.start_thread()
-                    self.task_added.emit(scene_class.DISPLAY_NAME, True)
 
                 self.status_changed.emit(f"开始执行 Session {session_id}", "#4ec9b0")
                 LogManager().append(f"[Engine] 开始执行 Session {session_id}")

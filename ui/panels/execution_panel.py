@@ -82,6 +82,14 @@ class ExecutionPanelMixin:
         layout.insertWidget(3, self.execution_panel)
         self.execution_panel.setVisible(False)
 
+        # 程序启动时预填充所有场景类到任务队列
+        try:
+            from analysis.scene_classes import SceneFactory
+            for level, scene_class in SceneFactory._level_map.items():
+                self._on_task_added(scene_class.DISPLAY_NAME, True)
+        except Exception:
+            pass
+
     def _on_task_added(self, text: str, pending: bool):
         item = QTreeWidgetItem()
         item.setText(0, text)
