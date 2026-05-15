@@ -6,9 +6,12 @@
 
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, TYPE_CHECKING
 from datetime import datetime
 from enum import Enum
+
+if TYPE_CHECKING:
+    from analysis.scene.thread import SceneThread
 
 
 class SceneLevel(Enum):
@@ -82,11 +85,13 @@ class SceneState(Enum):
 class BaseScene(ABC):
     """
     场景基类
-    所有场景类的基础，包含hash值和核心属性
+    所有场景类的基础，包含hash值和核心属性。
+    每个继承自 BaseScene 的子类都拥有独立的 SceneThread。
     """
 
     LEVEL: SceneLevel = SceneLevel.UNKNOWN
     DISPLAY_NAME: str = "未知场景"
+    _THREAD: Optional['SceneThread'] = None
 
     def __init__(
         self,
@@ -127,6 +132,37 @@ class BaseScene(ABC):
     def is_valid(self) -> bool:
         """验证场景数据有效性"""
         pass
+
+    # ------------------------------------------------------------------
+    # 类级别线程管理（每个子类独立一个线程）
+    # ------------------------------------------------------------------
+    @classmethod
+    def start_thread(cls):
+        """启动该场景类的专属线程（如果未运行）。"""
+        from analysis.scene.thread import SceneThread
+        if cls._THREAD is None or not cls._THREAD.is_alive():
+            cls._THREAD = SceneThread(cls.LEVEL.value, cls.DISPLAY_NAME)
+            cls._THREAD.start()
+
+    @classmethod
+    def stop_thread(cls):
+        """停止该场景类的专属线程。"""
+        if cls._THREAD is not None:
+            cls._THREAD.stop()
+            cls._THREAD = None
+
+    @classmethod
+    def activate_thread(cls):
+        """激活该场景类的专属线程。"""
+        if cls._THREAD is not None and cls._THREAD.is_alive():
+            cls._THREAD.activate()
+
+    @classmethod
+    def get_thread_fps(cls) -> float:
+        """获取该场景类线程的当前 FPS。"""
+        if cls._THREAD is not None and cls._THREAD.is_alive():
+            return cls._THREAD.get_fps()
+        return 0.0
 
     def get_hash_similarity(self, other: 'BaseScene') -> float:
         """计算与另一个场景的hash相似度"""

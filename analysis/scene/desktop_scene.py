@@ -28,6 +28,10 @@ class DesktopScene(BaseScene):
         return bool(self.dhash)
 
 
-# 注册到工厂（放在文件末尾避免循环导入时 SceneFactory 未定义）
-from analysis.scene_classes import SceneFactory  # noqa: E402
-SceneFactory._level_map[SceneLevel.DESKTOP] = DesktopScene
+def _register():
+    """延迟注册到 SceneFactory，避免循环导入。"""
+    from analysis.scene_classes import SceneFactory, SceneLevel
+    SceneFactory._level_map[SceneLevel.DESKTOP] = DesktopScene
+
+
+_register()

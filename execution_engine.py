@@ -19,61 +19,8 @@ from log_manager import LogManager
 from analysis.scene_recognizer import SceneRecognizer
 from analysis.scene_classes import SceneLevel, SceneState, SceneFactory
 
-
-class SceneThread(threading.Thread):
-    """场景线程 - 每个场景层级独立线程，默认空跑，被激活时执行场景任务。"""
-
-    def __init__(self, scene_level: str, display_name: str):
-        super().__init__(name=f"Scene-{display_name}", daemon=True)
-        self.scene_level = scene_level
-        self.display_name = display_name
-        self._running = False
-        self._active = False
-        self._lock = threading.Lock()
-        self._fps_counter = 0
-        self._fps = 0.0
-        self._fps_last_time = time.time()
-        self._fps_lock = threading.Lock()
-
-    def run(self):
-        self._running = True
-        while self._running:
-            with self._lock:
-                active = self._active
-            if active:
-                LogManager().append(f"[SceneThread] {self.display_name} 线程激活执行")
-                self._count_fps()
-                # TODO: 在这里扩展场景特定的执行逻辑
-                with self._lock:
-                    self._active = False
-            else:
-                # 空跑：短暂休眠后继续检查
-                time.sleep(0.1)
-
-    def _count_fps(self):
-        with self._fps_lock:
-            self._fps_counter += 1
-            now = time.time()
-            if now - self._fps_last_time >= 1.0:
-                self._fps = self._fps_counter / (now - self._fps_last_time)
-                self._fps_counter = 0
-                self._fps_last_time = now
-
-    def get_fps(self) -> float:
-        with self._fps_lock:
-            now = time.time()
-            if now - self._fps_last_time >= 1.0:
-                self._fps = 0.0
-                self._fps_counter = 0
-                self._fps_last_time = now
-            return self._fps
-
-    def activate(self):
-        with self._lock:
-            self._active = True
-
-    def stop(self):
-        self._running = False
+# 触发 DesktopScene 注册到 SceneFactory（避免循环导入的延迟注册）
+import analysis.scene  # noqa: F401
 
 
 class ExecutionEngine(QObject):
@@ -109,23 +56,15 @@ class ExecutionEngine(QObject):
         self._current_frame = None          # 最新视频帧，由 write_frame 更新
         self._recognize_thread = None       # 场景识别循环线程
         self._recognize_interval = 2.0      # 每隔 2 秒识别一次
-        self._scene_threads: Dict[str, SceneThread] = {}
-        self._init_scene_threads()
         # 延迟后台预热 OCR 引擎，避免和主窗口初始化竞争 CPU
     # ------------------------------------------------------------------
     # Session / 录制 控制
     # ------------------------------------------------------------------
-    def _init_scene_threads(self):
-        """为所有场景层级预创建线程（此时不启动，只创建对象）。"""
-        for level, scene_class in SceneFactory._level_map.items():
-            thread = SceneThread(level.value, scene_class.DISPLAY_NAME)
-            self._scene_threads[level.value] = thread
-
     def get_scene_fps(self, display_name: str) -> float:
         """获取指定显示名的场景线程当前 FPS。"""
-        for thread in self._scene_threads.values():
-            if thread.display_name == display_name:
-                return thread.get_fps()
+        for level, scene_class in SceneFactory._level_map.items():
+            if scene_class.DISPLAY_NAME == display_name:
+                return scene_class.get_thread_fps()
         return 0.0
 
     def is_running(self) -> bool:
@@ -160,10 +99,9 @@ class ExecutionEngine(QObject):
                 self.task_cleared.emit()
 
                 # 启动所有场景线程（空跑），并将场景名插入任务队列
-                for thread in self._scene_threads.values():
-                    if not thread.is_alive():
-                        thread.start()
-                    self.task_added.emit(thread.display_name, True)
+                for level, scene_class in SceneFactory._level_map.items():
+                    scene_class.start_thread()
+                    self.task_added.emit(scene_class.DISPLAY_NAME, True)
 
                 self.status_changed.emit(f"开始执行 Session {session_id}", "#4ec9b0")
                 LogManager().append(f"[Engine] 开始执行 Session {session_id}")
@@ -189,8 +127,8 @@ class ExecutionEngine(QObject):
         self._running = False
 
         # 停止所有场景线程
-        for thread in self._scene_threads.values():
-            thread.stop()
+        for level, scene_class in SceneFactory._level_map.items():
+            scene_class.stop_thread()
 
         self.dm.end_session()
         self.status_changed.emit("执行已停止", "#ce9178")
@@ -383,9 +321,9 @@ class ExecutionEngine(QObject):
                 self.status_changed.emit(f"识别场景: {short_name}", "#47f447")
 
                 # 激活对应场景线程
-                thread = self._scene_threads.get(level_name)
-                if thread:
-                    thread.activate()
+                scene_class = SceneFactory.get_class(scene.LEVEL)
+                if scene_class:
+                    scene_class.activate_thread()
 
                 # 将对应场景任务标记为完成
                 self.task_done.emit(display_name, True)
