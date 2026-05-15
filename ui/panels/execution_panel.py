@@ -144,17 +144,17 @@ class ExecutionPanelMixin:
         return None
 
     def _start_task_timer(self, item, base_text: str):
-        """为任务项启动秒表计时器，每秒更新文本。"""
-        import time
+        """为任务项启动 FPS 刷新计时器，每秒从对应场景线程获取 FPS 更新文本。"""
         if not hasattr(self, '_task_timers'):
             self._task_timers = {}
-        start_time = time.time()
         timer = QTimer(self)
         timer.setInterval(1000)
 
         def _tick():
-            elapsed = int(time.time() - start_time)
-            item.setText(0, f"{base_text} ({elapsed}s)")
+            fps = 0.0
+            if hasattr(self, 'execution_engine') and self.execution_engine:
+                fps = self.execution_engine.get_scene_fps(base_text)
+            item.setText(0, f"{base_text} ({fps:.1f} fps)")
 
         timer.timeout.connect(_tick)
         timer.start()

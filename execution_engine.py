@@ -30,6 +30,10 @@ class SceneThread(threading.Thread):
         self._running = False
         self._active = False
         self._lock = threading.Lock()
+        self._fps_counter = 0
+        self._fps = 0.0
+        self._fps_last_time = time.time()
+        self._fps_lock = threading.Lock()
 
     def run(self):
         self._running = True
@@ -38,12 +42,31 @@ class SceneThread(threading.Thread):
                 active = self._active
             if active:
                 LogManager().append(f"[SceneThread] {self.display_name} 线程激活执行")
+                self._count_fps()
                 # TODO: 在这里扩展场景特定的执行逻辑
                 with self._lock:
                     self._active = False
             else:
                 # 空跑：短暂休眠后继续检查
                 time.sleep(0.1)
+
+    def _count_fps(self):
+        with self._fps_lock:
+            self._fps_counter += 1
+            now = time.time()
+            if now - self._fps_last_time >= 1.0:
+                self._fps = self._fps_counter / (now - self._fps_last_time)
+                self._fps_counter = 0
+                self._fps_last_time = now
+
+    def get_fps(self) -> float:
+        with self._fps_lock:
+            now = time.time()
+            if now - self._fps_last_time >= 1.0:
+                self._fps = 0.0
+                self._fps_counter = 0
+                self._fps_last_time = now
+            return self._fps
 
     def activate(self):
         with self._lock:
@@ -97,6 +120,13 @@ class ExecutionEngine(QObject):
         for level, scene_class in SceneFactory._level_map.items():
             thread = SceneThread(level.value, scene_class.DISPLAY_NAME)
             self._scene_threads[level.value] = thread
+
+    def get_scene_fps(self, display_name: str) -> float:
+        """获取指定显示名的场景线程当前 FPS。"""
+        for thread in self._scene_threads.values():
+            if thread.display_name == display_name:
+                return thread.get_fps()
+        return 0.0
 
     def is_running(self) -> bool:
         return self._running
