@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from PySide6.QtGui import QAction
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 
 from ui_main_window import Ui_MainWindow
 from video_widget import VideoGLWidget
@@ -134,7 +134,19 @@ class MainWindow(
         # video_widget 创建完成后连接场景名字叠加信号
         if self.video_widget:
             self.execution_engine.scene_name_changed.connect(self.video_widget.set_overlay_text)
-            self.execution_engine.motion_heatmap_ready.connect(self.video_widget.set_heatmap)
+
+        # 创建热力图独立标签页
+        self.heatmap_tab = QWidget()
+        self.heatmap_tab.setStyleSheet("background-color: #1e1e1e;")
+        heatmap_layout = QVBoxLayout(self.heatmap_tab)
+        heatmap_layout.setContentsMargins(8, 8, 8, 8)
+        self.heatmap_tab_label = QLabel("等待视频帧...")
+        self.heatmap_tab_label.setStyleSheet("background-color: #1e1e1e; color: #888888;")
+        self.heatmap_tab_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.heatmap_tab_label.setScaledContents(True)
+        heatmap_layout.addWidget(self.heatmap_tab_label)
+        self.ui.tabWidget.addTab(self.heatmap_tab, "热力图")
+        self.execution_engine.motion_heatmap_ready.connect(self._on_heatmap_tab)
 
         # 跨线程信号桥（必须在 setupUi 之后创建）
         self._bridge = SignalBridge(self)
@@ -295,6 +307,22 @@ class MainWindow(
 
         # 退出
         self.ui.actionExit.triggered.connect(self.close)
+
+    def _on_heatmap_tab(self, heatmap_rgb):
+        """接收运动热力图并在独立标签页显示。"""
+        if heatmap_rgb is None or heatmap_rgb.size == 0:
+            return
+        try:
+            from PySide6.QtGui import QImage
+            h, w, ch = heatmap_rgb.shape
+            bytes_per_line = ch * w
+            qimg = QImage(
+                heatmap_rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888
+            )
+            pixmap = QPixmap.fromImage(qimg)
+            self.heatmap_tab_label.setPixmap(pixmap)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # TODO: 执行引擎信号槽和自动化决策方法已移至 PanelsMixin
