@@ -60,11 +60,12 @@ class MotionHeatmapAnalyzer:
         # 2. 二值化：动的区域设为 1.0，不动区域设为 0
         _, motion_mask = cv2.threshold(diff, self.threshold, 1.0, cv2.THRESH_BINARY)
 
-        # 3. 高斯模糊：让热点边缘更平滑自然
+        # 3. 先转 float32 再做高斯模糊，避免 uint8 精度丢失（1 经 15x15 模糊后四舍五入为 0）
+        motion_mask = motion_mask.astype(np.float32)
         motion_mask = cv2.GaussianBlur(motion_mask, (self.blur_ksize, self.blur_ksize), 0)
 
         # 4. 衰减 + 累积：旧热度衰减，新运动叠加
-        self._heatmap = self._heatmap * self.decay + motion_mask.astype(np.float32)
+        self._heatmap = self._heatmap * self.decay + motion_mask
 
         # 保存当前帧供下次使用
         self._prev_gray = gray
