@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenu,
     QPushButton,
+    QSizePolicy,
     QSplitter,
     QToolButton,
     QVBoxLayout,
@@ -144,7 +145,7 @@ class MainWindow(
         self.heatmap_tab_label = QLabel("等待视频帧...")
         self.heatmap_tab_label.setStyleSheet("background-color: #1e1e1e; color: #888888;")
         self.heatmap_tab_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.heatmap_tab_label.setScaledContents(True)
+        self.heatmap_tab_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         heatmap_layout.addWidget(self.heatmap_tab_label)
         self.ui.tabWidget.addTab(self.heatmap_tab, "热力图")
         self.execution_engine.motion_heatmap_ready.connect(self._on_heatmap_tab)
@@ -321,7 +322,12 @@ class MainWindow(
             qimg = QImage(
                 heatmap_rgb.tobytes(), w, h, bytes_per_line, QImage.Format.Format_RGB888
             )
-            pixmap = QPixmap.fromImage(qimg)
+            pixmap = QPixmap.fromImage(qimg).scaled(
+                self.heatmap_tab_label.width(),
+                self.heatmap_tab_label.height(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
             self.heatmap_tab_label.setPixmap(pixmap)
         except Exception as e:
             LogManager().append(f"[WARN] 热力图显示失败: {e}")
