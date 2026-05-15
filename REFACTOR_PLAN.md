@@ -10,6 +10,7 @@ This pass completed the structural refactor: the oversized `MainWindow` and the 
 
 Panel and dialog orchestration lives under `ui/panels/`.
 
+- `mixins.py`: aggregates panel mixins so `MainWindow` does not inherit every panel directly.
 - `event_list_panel.py`: event list, search, and event statistics.
 - `event_detail_panel.py`: event detail tabs and rule debug entry.
 - `event_video_panel.py`: event-local video controls.
@@ -27,6 +28,7 @@ Panel and dialog orchestration lives under `ui/panels/`.
 
 Application and device management lives under `services/`.
 
+- `mixins.py`: aggregates service mixins.
 - `device_connection.py`: ADB refresh/connect/disconnect, IP detection, device resolution.
 - `frame_capture.py`: scrcpy frame flushing, screenshots, async frame saves.
 - `touch_mapping.py`: frame/device/raw touch coordinate mapping wrappers.
@@ -40,6 +42,7 @@ Application and device management lives under `services/`.
 
 Model and image analysis lives under `analysis/`.
 
+- `mixins.py`: aggregates analysis mixins.
 - `click_target_pipeline.py`: runtime rule -> YOLO -> hash -> LLM click target pipeline.
 - `click_image_helpers.py` and `image_metrics.py`: click bbox and image-difference helpers.
 - `yolo_detection.py`: YOLO model detection and click-object selection.
@@ -65,6 +68,7 @@ The existing data layer remains in:
 ## Size After Refactor
 
 - `main.py`: about 590 lines, down from 5600+.
+- `MainWindow` now directly inherits only `PanelsMixin`, `ServicesMixin`, `AnalysisMixin`, and `QMainWindow`.
 - Largest remaining focused modules:
   - `ui/panels/yolo_audit_panel.py`: about 430 lines.
   - `analysis/reanalyze_providers.py`: about 293 lines.

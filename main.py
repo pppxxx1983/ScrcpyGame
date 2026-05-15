@@ -39,111 +39,15 @@ from log_manager import LogManager
 from execution_engine import ExecutionEngine
 from scene_index import UnknownFolderProcessor
 from ui.widgets.signal_bridge import SignalBridge
-from ui.panels.event_list_panel import EventListPanelMixin
-from ui.panels.event_detail_panel import EventDetailPanelMixin
-from ui.panels.event_video_panel import EventVideoPanelMixin
-from ui.panels.tab_manager_panel import TabManagerPanelMixin
-from ui.panels.video_replay_panel import VideoReplayPanelMixin
-from ui.panels.execution_panel import ExecutionPanelMixin
-from ui.panels.rules_setup_panel import RulesSetupPanelMixin
-from ui.panels.rules_refresh_panel import RulesRefreshPanelMixin
-from ui.panels.rules_actions_panel import RulesActionsPanelMixin
-from ui.panels.audit_setup_panel import AuditSetupPanelMixin
-from ui.panels.audit_refresh_panel import AuditRefreshPanelMixin
-from ui.panels.audit_actions_panel import AuditActionsPanelMixin
-from ui.panels.scene_audit_panel import SceneAuditPanelMixin
-from ui.panels.yolo_audit_panel import YoloAuditPanelMixin
-from ui.panels.reanalyze_history_panel import ReanalyzeHistoryPanelMixin
-from ui.panels.status_panel import StatusPanelMixin
-from services.device_connection import DeviceConnectionMixin
-from services.frame_capture import FrameCaptureMixin
-from services.touch_mapping import TouchMappingMixin
-from services.getevent_listener import GeteventListenerMixin
-from services.scrcpy_control import ScrcpyControlMixin
-from services.physical_touch_input import PhysicalTouchInputMixin
-from services.projected_touch_input import ProjectedTouchInputMixin
-from services.recording_event_service import RecordingEventMixin
-from services.maintenance_service import MaintenanceServiceMixin
-from analysis.yolo_annotation_files import YoloAnnotationFilesMixin
-from analysis.yolo_review_actions import YoloReviewActionsMixin
-from analysis.yolo_training import YoloTrainingMixin
-from analysis.runtime_index_compile import RuntimeIndexCompileMixin
-from analysis.yolo_class_utils import YoloClassUtilsMixin
-from analysis.click_image_helpers import ClickImageHelpersMixin
-from analysis.yolo_detection import YoloDetectionMixin
-from analysis.click_target_pipeline import ClickTargetPipelineMixin
-from analysis.llm_click_description import LlmClickDescriptionMixin
-from analysis.gpt_yolo_annotation import GptYoloAnnotationMixin
-from analysis.event_unknown_queue import EventUnknownQueueMixin
-from analysis.event_unknown_processor import EventUnknownProcessorMixin
-from analysis.touch_index_writer import TouchIndexWriterMixin
-from analysis.reanalyze_prompt import ReanalyzePromptMixin
-from analysis.reanalyze_response import ReanalyzeResponseMixin
-from analysis.reanalyze_providers import ReanalyzeProvidersMixin
-from analysis.scene_reclassification import SceneReclassificationMixin
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+from analysis.mixins import AnalysisMixin
+from services.mixins import ServicesMixin
+from ui.panels.mixins import PanelsMixin
 
 
 class MainWindow(
-    EventListPanelMixin,
-    EventDetailPanelMixin,
-    EventVideoPanelMixin,
-    TabManagerPanelMixin,
-    VideoReplayPanelMixin,
-    ExecutionPanelMixin,
-    RulesSetupPanelMixin,
-    RulesRefreshPanelMixin,
-    RulesActionsPanelMixin,
-    AuditSetupPanelMixin,
-    AuditRefreshPanelMixin,
-    AuditActionsPanelMixin,
-    SceneAuditPanelMixin,
-    YoloAuditPanelMixin,
-    ReanalyzeHistoryPanelMixin,
-    StatusPanelMixin,
-    DeviceConnectionMixin,
-    FrameCaptureMixin,
-    TouchMappingMixin,
-    GeteventListenerMixin,
-    ScrcpyControlMixin,
-    PhysicalTouchInputMixin,
-    ProjectedTouchInputMixin,
-    RecordingEventMixin,
-    MaintenanceServiceMixin,
-    YoloAnnotationFilesMixin,
-    YoloReviewActionsMixin,
-    YoloTrainingMixin,
-    RuntimeIndexCompileMixin,
-    YoloClassUtilsMixin,
-    ClickImageHelpersMixin,
-    YoloDetectionMixin,
-    ClickTargetPipelineMixin,
-    LlmClickDescriptionMixin,
-    GptYoloAnnotationMixin,
-    EventUnknownQueueMixin,
-    EventUnknownProcessorMixin,
-    TouchIndexWriterMixin,
-    ReanalyzePromptMixin,
-    ReanalyzeResponseMixin,
-    ReanalyzeProvidersMixin,
-    SceneReclassificationMixin,
+    PanelsMixin,
+    ServicesMixin,
+    AnalysisMixin,
     QMainWindow,
 ):
     def __init__(self):
@@ -390,165 +294,14 @@ class MainWindow(
         # 退出
         self.ui.actionExit.triggered.connect(self.close)
 
-
-
-
-
-
-
-
-
-
-
-
     # ------------------------------------------------------------------
-    # 执行引擎信号槽
+    # TODO: 执行引擎信号槽和自动化决策方法已移至 PanelsMixin
+    # 如需在此处实现特定逻辑，请在对应的 Panel Mixin 中添加
     # ------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    @staticmethod
-
-
-
-
-
-    @staticmethod
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    # ------------------------------------------------------------------
-    # 自动化决策
-    # ------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-    @staticmethod
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    # ------------------------------------------------------------------
-    # 视频录制
-    # ------------------------------------------------------------------
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     # ------------------------------------------------------------------
     # TODO Dialogs
     # ------------------------------------------------------------------
-
-
-
-
-
-
 
     def closeEvent(self, event):
         if hasattr(self, '_event_unknown_stop'):
@@ -567,14 +320,12 @@ class MainWindow(
             self.client.stop()
         event.accept()
 
-
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     window = MainWindow()
     window.show()
     sys.exit(app.exec())
-
 
 if __name__ == "__main__":
     main()

@@ -26,9 +26,9 @@ class QwenVLClient:
     FALLBACK_MODELS = ["openai/gpt-5.5", "openai/gpt-4o"]
 
     def __init__(self, api_key: Optional[str] = None, model: str = "openai/gpt-5.5"):
-        self.api_key = api_key or os.environ.get(
-            "OFOX_API_KEY", "sk-of-HfjuJzJMwyPhzpzTAygdsciwFbhnEcZFnrVOGdYcdQZppuNvpMsAFQMmzHnyzohL"
-        )
+        self.api_key = api_key or os.environ.get("OFOX_API_KEY", "")
+        if not self.api_key:
+            raise ValueError("OFOX_API_KEY environment variable is not set")
         self.model = model
         self.base_url = self.DEFAULT_URL
         self._client: Optional[OpenAI] = None
@@ -251,11 +251,9 @@ class DashScopeVLClient:
     DEFAULT_MODEL = "qwen-vl-max"
 
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = (
-            api_key
-            or os.environ.get("DASHSCOPE_API_KEY", "")
-            or "sk-b368216722514ad1956826669fe15b05"
-        )
+        self.api_key = api_key or os.environ.get("DASHSCOPE_API_KEY", "")
+        if not self.api_key:
+            raise ValueError("DASHSCOPE_API_KEY environment variable is not set")
         self.model = self.DEFAULT_MODEL
         self.base_url = self.DEFAULT_URL
         self._client: Optional[OpenAI] = None
