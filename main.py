@@ -317,13 +317,14 @@ class MainWindow(
             from PySide6.QtGui import QImage
             h, w, ch = heatmap_rgb.shape
             bytes_per_line = ch * w
+            # 用 tobytes() 避免 numpy 内存被回收导致 QImage 失效
             qimg = QImage(
-                heatmap_rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888
+                heatmap_rgb.tobytes(), w, h, bytes_per_line, QImage.Format.Format_RGB888
             )
             pixmap = QPixmap.fromImage(qimg)
             self.heatmap_tab_label.setPixmap(pixmap)
-        except Exception:
-            pass
+        except Exception as e:
+            LogManager().append(f"[WARN] 热力图显示失败: {e}")
 
     # ------------------------------------------------------------------
     # TODO: 执行引擎信号槽和自动化决策方法已移至 PanelsMixin
