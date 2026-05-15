@@ -134,6 +134,7 @@ class MainWindow(
         # video_widget 创建完成后连接场景名字叠加信号
         if self.video_widget:
             self.execution_engine.scene_name_changed.connect(self.video_widget.set_overlay_text)
+            self.execution_engine.motion_heatmap_ready.connect(self.video_widget.set_heatmap)
 
         # 跨线程信号桥（必须在 setupUi 之后创建）
         self._bridge = SignalBridge(self)

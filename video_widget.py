@@ -22,6 +22,7 @@ class VideoGLWidget(QWidget):
         self.on_scroll = None         # callback(frame_x, frame_y, h, v)
         self._status_lines = []
         self._overlay_text = ""       # 场景识别名字叠加文字
+        self._heatmap_pixmap = None   # 运动热力图叠加
 
     def show_touch_feedback(self, points, hold_ms: int = 450):
         self._touch_points = [(int(x), int(y)) for x, y in points if x is not None and y is not None]
@@ -125,6 +126,23 @@ class VideoGLWidget(QWidget):
         self._status_lines = [str(line) for line in (lines or []) if str(line).strip()]
         self.update()
 
+    def set_heatmap(self, heatmap_rgb: np.ndarray):
+        """设置右下角叠加的运动热力图，None 表示清除。"""
+        if heatmap_rgb is None or heatmap_rgb.size == 0:
+            self._heatmap_pixmap = None
+            self.update()
+            return
+        try:
+            h, w, ch = heatmap_rgb.shape
+            bytes_per_line = ch * w
+            qimg = QImage(
+                heatmap_rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888
+            )
+            self._heatmap_pixmap = QPixmap.fromImage(qimg)
+            self.update()
+        except Exception:
+            self._heatmap_pixmap = None
+
     def paintEvent(self, event):
         if self._image is None:
             return
@@ -173,6 +191,21 @@ class VideoGLWidget(QWidget):
                 else:
                     painter.setPen(QColor("#ffffff"))
                 painter.drawText(panel_x + 9, panel_y + 9 + idx * line_h + fm.ascent(), line)
+
+        # 绘制热力图（右下角，半透明叠加）
+        if self._heatmap_pixmap is not None:
+            hw = self._heatmap_pixmap.width()
+            hh = self._heatmap_pixmap.height()
+            max_w = int(new_w * 0.35)
+            max_h = int(new_h * 0.35)
+            scale = min(max_w / max(1, hw), max_h / max(1, hh), 1.0)
+            draw_w = int(hw * scale)
+            draw_h = int(hh * scale)
+            draw_x = x + new_w - draw_w - 12
+            draw_y = y + new_h - draw_h - 12
+            painter.setOpacity(0.65)
+            painter.drawPixmap(draw_x, draw_y, draw_w, draw_h, self._heatmap_pixmap)
+            painter.setOpacity(1.0)
 
         touch_points = getattr(self, "_touch_points", [])
         if touch_points:
