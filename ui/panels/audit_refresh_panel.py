@@ -8,19 +8,19 @@ from PySide6.QtCore import Qt
 from log_manager import LogManager
 from scene_index import SceneIndex
 
-
-
-
-
+from analysis.scene_classifier import (
+    SceneLevel, SceneState, SCENE_LEVEL_DISPLAY, SCENE_STATE_DISPLAY,
+)
 
 from PySide6.QtWidgets import QTreeWidgetItem
+
+
 class AuditRefreshPanelMixin:
     def _refresh_audit_list(self):
         """从 scene_index.sqlite 读取场景列表并展示，支持按审核状态单选过滤。"""
         self.audit_list.clear()
         is_yolo = getattr(self, "rb_audit_yolo", None) and self.rb_audit_yolo.isChecked()
         if getattr(self, "batch_btn_row", None):
-            # 批量按钮只在 YOLO 模式下显示
             for i in range(self.batch_btn_row.count()):
                 w = self.batch_btn_row.itemAt(i).widget()
                 if w:
@@ -28,27 +28,32 @@ class AuditRefreshPanelMixin:
         if is_yolo:
             self._refresh_yolo_audit_list()
             return
-        self.audit_list.setHeaderLabels(["场景", "类型", "命中", "模型", "状态", "创建时间"])
+        self.audit_list.setHeaderLabels(["场景", "层级", "状态", "命中", "模型", "状态", "时间"])
         try:
             from scene_index import SceneIndex
             si = SceneIndex()
-            # 单选：未审核=0, 审核通过=1
             status_filter = 1 if self.rb_approved.isChecked() else 0
             with si._connect() as conn:
                 rows = conn.execute(
-                    "SELECT id, scene_key, scene_type, hits, model_name, review_status, created_at, image_path FROM scenes WHERE review_status = ? ORDER BY hits DESC",
+                    """SELECT id, scene_key, scene_level, scene_state, scene_context,
+                              hits, model_name, review_status, created_at, image_path
+                       FROM scenes WHERE review_status = ? ORDER BY hits DESC""",
                     (status_filter,),
                 ).fetchall()
-            for row_id, scene_key, scene_type, hits, model_name, review_status, created_at, image_path in rows:
+            for row in rows:
+                row_id, scene_key, scene_level, scene_state, scene_context, hits, model_name, review_status, created_at, image_path = row
                 item = QTreeWidgetItem()
                 item.setText(0, str(scene_key))
-                item.setText(1, str(scene_type or ""))
-                item.setText(2, str(hits))
-                item.setText(3, str(model_name))
-                item.setText(4, "审核通过" if review_status else "未审核")
-                item.setText(5, str(created_at))
-                item.setData(0, 256, row_id)          # 存储 id
-                item.setData(0, 257, str(image_path)) # 存储图片路径
+                level_display = SCENE_LEVEL_DISPLAY.get(SceneLevel(scene_level), scene_level) if scene_level else "未分类"
+                item.setText(1, level_display)
+                state_display = SCENE_STATE_DISPLAY.get(SceneState(scene_state), scene_state) if scene_state else ""
+                item.setText(2, state_display)
+                item.setText(3, str(hits))
+                item.setText(4, str(model_name))
+                item.setText(5, "审核通过" if review_status else "未审核")
+                item.setText(6, str(created_at))
+                item.setData(0, 256, row_id)
+                item.setData(0, 257, str(image_path))
                 self.audit_list.addTopLevelItem(item)
         except Exception as e:
             LogManager().append(f"[Audit] 刷新场景列表失败: {e}")

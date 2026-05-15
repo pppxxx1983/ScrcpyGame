@@ -18,6 +18,8 @@ from typing import Dict, Any, Optional
 
 from openai import OpenAI, APIError
 
+from exceptions import ApiKeyError, LlmApiError
+
 
 class QwenVLClient:
     """视觉模型客户端（默认通过 ofox.ai 调用 gpt-5.5，失败自动 fallback 到 gpt-4o）"""
@@ -28,7 +30,8 @@ class QwenVLClient:
     def __init__(self, api_key: Optional[str] = None, model: str = "openai/gpt-5.5"):
         self.api_key = api_key or os.environ.get("OFOX_API_KEY", "")
         if not self.api_key:
-            raise ValueError("OFOX_API_KEY environment variable is not set")
+            import warnings
+            warnings.warn("OFOX_API_KEY environment variable is not set, LLM features will be unavailable")
         self.model = model
         self.base_url = self.DEFAULT_URL
         self._client: Optional[OpenAI] = None
@@ -107,7 +110,11 @@ class QwenVLClient:
         if not image_path.exists():
             return "[qwen_vl_error] Image not found"
 
-        image_b64 = self._prepare_image(image_path)
+        try:
+            image_b64 = self._prepare_image(image_path)
+        except (IOError, OSError) as e:
+            return f"[qwen_vl_error] Failed to prepare image: {e}"
+
         prompt = prompt or (
             "请判断这张游戏截图的关键画面状态，用一句中文描述。"
             "不要写推理过程，不要超过60字。"
@@ -125,9 +132,12 @@ class QwenVLClient:
                 )
                 log.append(f"[LLM] RAW: {content[:500]}")
                 return content
-            except Exception as e:
+            except (APIError, TimeoutError, ConnectionError) as e:
                 last_err = str(e)
                 log.append(f"[LLM] describe_image FAIL model={model} | {e}")
+            except Exception as e:
+                last_err = f"Unexpected error: {e}"
+                log.append(f"[LLM] describe_image UNEXPECTED FAIL model={model} | {e}")
 
         cost = (time.time() - t0) * 1000
         err = f"[qwen_vl_error] {last_err}"
@@ -163,7 +173,12 @@ class QwenVLClient:
         if not image_path.exists():
             return {"scene_description": "", "ocr_text": [], "objects": []}
 
-        image_b64 = self._prepare_image(image_path)
+        try:
+            image_b64 = self._prepare_image(image_path)
+        except (IOError, OSError) as e:
+            log.append(f"[LLM] Failed to prepare image: {e}")
+            return {"scene_description": "", "ocr_text": [], "objects": []}
+
         prompt = (
             "请分析这张游戏截图，输出以下三部分内容，严格按 JSON 格式：\n"
             "{\n"
@@ -189,9 +204,12 @@ class QwenVLClient:
                 )
                 log.append(f"[LLM] RAW: {text[:800]}")
                 break
-            except Exception as e:
+            except (APIError, TimeoutError, ConnectionError) as e:
                 last_err = str(e)
                 log.append(f"[LLM] analyze_scene FAIL model={model} | {e}")
+            except Exception as e:
+                last_err = f"Unexpected error: {e}"
+                log.append(f"[LLM] analyze_scene UNEXPECTED FAIL model={model} | {e}")
 
         if not text:
             cost = (time.time() - t0) * 1000
@@ -203,7 +221,7 @@ class QwenVLClient:
                 "objects": [],
             }
 
-        # 提取 JSON
+        data = {}
         try:
             m = re.search(r"```json\s*(.*?)\s*```", text, re.DOTALL)
             if m:
@@ -212,21 +230,17 @@ class QwenVLClient:
                 m = re.search(r"\{.*\}", text, re.DOTALL)
                 if m:
                     data = json.loads(m.group(0))
-                else:
-                    data = {}
-        except Exception:
-            log.append(f"[LLM] JSON parse failed, raw: {text[:500]}")
+        except (json.JSONDecodeError, ValueError) as e:
+            log.append(f"[LLM] JSON parse failed: {e}, raw: {text[:500]}")
             data = {}
 
         if not isinstance(data, dict):
             data = {}
 
-        # 解析 ocr_text
         ocr_text = data.get("ocr_text", [])
         if isinstance(ocr_text, str):
             ocr_text = [line.strip() for line in ocr_text.split("\n") if line.strip()]
 
-        # 解析 objects
         objects = []
         for item in data.get("objects", []):
             if isinstance(item, dict) and "name" in item and "bbox" in item:
@@ -253,7 +267,8 @@ class DashScopeVLClient:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.environ.get("DASHSCOPE_API_KEY", "")
         if not self.api_key:
-            raise ValueError("DASHSCOPE_API_KEY environment variable is not set")
+            import warnings
+            warnings.warn("DASHSCOPE_API_KEY environment variable is not set, DashScope features will be unavailable")
         self.model = self.DEFAULT_MODEL
         self.base_url = self.DEFAULT_URL
         self._client: Optional[OpenAI] = None
@@ -301,7 +316,12 @@ class DashScopeVLClient:
         if not image_path.exists():
             return "[dashscope_vl_error] Image not found"
 
-        image_b64 = self._prepare_image(image_path)
+        try:
+            image_b64 = self._prepare_image(image_path)
+        except (IOError, OSError) as e:
+            log.append(f"[DashScopeVL] Failed to prepare image: {e}")
+            return "[dashscope_vl_error] Failed to prepare image"
+
         log.append(f"[DashScopeVL] >>> call_vision | model={self.model} | file={image_path}")
         try:
             response = self._get_client().chat.completions.create(
@@ -326,8 +346,11 @@ class DashScopeVLClient:
             content = (response.choices[0].message.content or "").strip()
             log.append(f"[DashScopeVL] <<< call_vision OK | len={len(content)}")
             return content
-        except Exception as e:
+        except (APIError, TimeoutError, ConnectionError) as e:
             log.append(f"[DashScopeVL] call_vision FAIL | {e}")
+            raise LlmApiError(f"DashScope API failed: {e}", self.model) from e
+        except Exception as e:
+            log.append(f"[DashScopeVL] call_vision UNEXPECTED FAIL | {e}")
             raise
 
 
@@ -397,12 +420,19 @@ class DeepSeekClient:
             parsed = self._parse_decision(raw)
             parsed["raw"] = raw
             return parsed
+        except (APIError, TimeoutError, ConnectionError) as e:
+            return {
+                "raw": "",
+                "action": "none",
+                "params": {},
+                "reasoning": f"[deepseek_error] API error: {e}",
+            }
         except Exception as e:
             return {
                 "raw": "",
                 "action": "none",
                 "params": {},
-                "reasoning": f"[deepseek_error] {e}",
+                "reasoning": f"[deepseek_error] Unexpected error: {e}",
             }
 
     @staticmethod

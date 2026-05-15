@@ -4,9 +4,10 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 
-def build_recording_event(op_dir: Path, data: dict, recording_context: dict) -> dict:
+def build_recording_event(op_dir: Path, data: dict[str, Any], recording_context: dict[str, Any]) -> dict[str, Any]:
     return {
         "recording_kind": recording_context.get("kind", ""),
         "video_offset_ms": recording_context.get("video_offset_ms"),
@@ -27,7 +28,7 @@ def build_recording_event(op_dir: Path, data: dict, recording_context: dict) -> 
     }
 
 
-def append_jsonl(path: Path, row: dict) -> None:
+def append_jsonl(path: Path, row: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row, ensure_ascii=False) + "\n")

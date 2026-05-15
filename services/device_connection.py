@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import threading
+from typing import Optional, Tuple
 
 import scrcpy
 
@@ -9,19 +10,19 @@ from log_manager import LogManager
 
 
 from PySide6.QtWidgets import QLineEdit, QListWidgetItem
+
+
 class DeviceConnectionMixin:
-    def _update_connect_buttons(self, connected: bool):
-        """发射信号，让主线程更新连接按钮文字"""
+    def _update_connect_buttons(self, connected: bool) -> None:
         self._bridge.buttons_changed.emit(connected)
 
-    def _update_connect_buttons_slot(self, connected: bool):
-        """槽函数：在主线程更新按钮文字"""
+    def _update_connect_buttons_slot(self, connected: bool) -> None:
         if self.btn_ip:
             self.btn_ip.setText("断开连接" if connected else "IP 连接")
         if self.btn_adb:
             self.btn_adb.setText("断开连接" if connected else "连接选中设备")
 
-    def disconnect_device(self):
+    def disconnect_device(self) -> None:
         self._stop_getevent_listener()
         if self.execution_engine.is_running():
             self.execution_engine.stop()
@@ -31,7 +32,7 @@ class DeviceConnectionMixin:
         self._update_connect_buttons(False)
         self._set_status("状态: 已断开")
 
-    def do_ip_connect(self):
+    def do_ip_connect(self) -> None:
         if self.client and self.client.alive:
             self.disconnect_device()
             return
@@ -44,30 +45,29 @@ class DeviceConnectionMixin:
         self._set_status(f"状态: 正在连接 {device}...")
         self.connect_device(device)
 
-    def do_refresh_adb(self):
+    def do_refresh_adb(self) -> None:
         from adbutils import adb
         try:
             devices = adb.device_list()
             if self.list_adb:
                 self.list_adb.clear()
                 for d in devices:
-                    # 容错：某些设备获取 model 可能失败
                     try:
                         model = d.prop.model
                     except Exception:
                         model = "未知型号"
                     item = QListWidgetItem(f"{d.serial}  ({model})")
-                    item.setData(256, d.serial)  # 存储 serial
+                    item.setData(256, d.serial)
                     self.list_adb.addItem(item)
             self._set_status(f"状态: 发现 {len(devices)} 个设备")
         except Exception as e:
             self._set_status(f"状态: 刷新失败 - {e}")
 
-    def do_adb_connect(self):
+    def do_adb_connect(self) -> None:
         if self.client and self.client.alive:
             self.disconnect_device()
             return
-        device_serial = None
+        device_serial: Optional[str] = None
         if self.list_adb:
             item = self.list_adb.currentItem()
             if item:
@@ -81,7 +81,7 @@ class DeviceConnectionMixin:
         self._set_status(f"状态: 正在连接 {device_serial}...")
         self.connect_device(device_serial)
 
-    def _get_device_resolution(self, device_serial: str):
+    def _get_device_resolution(self, device_serial: str) -> Optional[Tuple[int, int]]:
         """通过 adb 获取设备真实分辨率，绕过 scrcpy 库的协议解析 bug"""
         try:
             from adbutils import adb
@@ -105,12 +105,11 @@ class DeviceConnectionMixin:
             LogManager().append(f"[ADB] get resolution failed: {e}")
         return None
 
-    def connect_device(self, device):
+    def connect_device(self, device: str) -> None:
         if self.client:
             self.client.stop()
             self.client = None
 
-        # 清理设备上可能残留的 scrcpy server，避免连到旧的乱序 socket
         try:
             from adbutils import adb
             d = adb.device(serial=device)
@@ -118,17 +117,14 @@ class DeviceConnectionMixin:
         except Exception:
             pass
 
-        # 通过 adb 直接获取设备真实分辨率
         self._device_resolution = self._get_device_resolution(device)
 
-        def on_frame(frame):
-            """scrcpy 回调线程：只做引用保存，零处理，零阻塞。"""
+        def on_frame(frame) -> None:
             if frame is not None:
                 self._pending_frame = frame
                 self._frame_flush_count += 1
 
-        def on_init():
-            # 优先使用 scrcpy 握手时的分辨率（和视频流方向 guaranteed 一致）
+        def on_init() -> None:
             cr = self.client.resolution
             LogManager().append(f"[Scrcpy] on_init, handshake resolution: {cr}")
             if cr and len(cr) == 2 and all(isinstance(v, int) and 0 < v < 10000 for v in cr):
@@ -143,12 +139,12 @@ class DeviceConnectionMixin:
             self._update_connect_buttons(True)
             self._set_status("状态: 已连接")
 
-        def on_disconnect():
+        def on_disconnect() -> None:
             self._stop_getevent_listener()
             self._update_connect_buttons(False)
             self._set_status("状态: 已断开")
 
-        def run():
+        def run() -> None:
             try:
                 self.client = scrcpy.Client(
                     device=device,
@@ -170,13 +166,12 @@ class DeviceConnectionMixin:
 
         threading.Thread(target=run, daemon=True).start()
 
-    def do_auto_ip(self):
+    def do_auto_ip(self) -> None:
         import re
         from adbutils import adb
 
         try:
-            device = adb.device()  # 获取第一个设备
-            # 尝试多种方式获取 IP
+            device = adb.device()
             output = device.shell("ip addr show wlan0")
             match = re.search(r'inet (\d+\.\d+\.\d+\.\d+)/', output)
             if not match:

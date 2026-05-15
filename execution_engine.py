@@ -16,9 +16,8 @@ from PySide6.QtCore import QObject, Signal
 
 from agent_data import AgentDataManager
 from log_manager import LogManager
-from scene_index import (
-    SceneIndex, image_fingerprint, _draw_name_on_image,
-)
+from analysis.scene_recognizer import SceneRecognizer
+from analysis.scene_classes import SceneLevel, SceneState
 
 
 class ExecutionEngine(QObject):
@@ -54,6 +53,7 @@ class ExecutionEngine(QObject):
         self._current_frame = None          # 最新视频帧，由 write_frame 更新
         self._recognize_thread = None       # 场景识别循环线程
         self._recognize_interval = 2.0      # 每隔 2 秒识别一次
+        self._last_queued_scene_name = ""   # 上次加入任务队列的场景名
         # 延迟后台预热 OCR 引擎，避免和主窗口初始化竞争 CPU
     # ------------------------------------------------------------------
     # Session / 录制 控制
@@ -88,7 +88,7 @@ class ExecutionEngine(QObject):
 
                 self._running = True
                 self.task_cleared.emit()
-                self.task_added.emit("识别场景", True)
+                self._last_queued_scene_name = ""
                 self.status_changed.emit(f"开始执行 Session {session_id}", "#4ec9b0")
                 LogManager().append(f"[Engine] 开始执行 Session {session_id}")
 
@@ -282,60 +282,39 @@ class ExecutionEngine(QObject):
         import time
         t0 = time.perf_counter()
         try:
-            # 子任务「场景哈希索引」立即显示
-            self.task_subtask_added.emit("识别场景", "场景哈希索引")
-
             temp_path = self._dump_frame_to_temp(frame)
             if temp_path is None:
                 self.status_changed.emit("识别场景: 无视频帧", "#f44747")
-                self.task_done.emit("识别场景", False)
-                self.task_done.emit("场景哈希索引", False)
                 return
 
-            # 1. 先做场景哈希索引
-            from scene_index import SceneIndex, image_fingerprint
-            si = SceneIndex()
-            fp = image_fingerprint(temp_path)
-            best = si.find_best(fp)
-            threshold = 0.92
+            # 使用新的场景识别系统
+            recognizer = SceneRecognizer()
 
-            if best and best["confidence"] >= threshold:
-                # 匹配到已知场景：画名字 + 增加 hits
-                si._record_hit(best["id"])
-                # scene_key 已存场景名字，直接显示
-                name = best.get("scene_key", "")[:4]
-                if not name:
-                    name = "已知"
-                # 在截图左上角显示名字（不弹标签页）
-                try:
-                    tagged_path = _draw_name_on_image(temp_path, name)
-                    # 清理临时文件（名字已显示在投屏上，不需要保留文件）
-                    try:
-                        temp_path.unlink(missing_ok=True)
-                        tagged_path.unlink(missing_ok=True)
-                    except Exception:
-                        pass
-                except Exception as e:
-                    LogManager().append(f"[WARN] 标记名字失败: {e}")
+            # 识别场景
+            scene = recognizer.recognize_scene(temp_path)
 
-                self.scene_name_changed.emit(name)
-                self.task_done.emit("识别场景", True)
-                self.task_done.emit("场景哈希索引", True)
-                return
+            if scene:
+                # 获取场景名称
+                level_name = scene.LEVEL.value
+                short_name = level_name[:4] if level_name else "未知"
 
-            # 2. 未匹配到已知场景：移到 unknown/，等后台 Ollama 8b 识别分类
-            unknown_dir = Path("screenshots") / "unknown"
-            unknown_dir.mkdir(parents=True, exist_ok=True)
-            unknown_path = unknown_dir / temp_path.name
+                self.scene_name_changed.emit(short_name)
+                self.status_changed.emit(f"识别场景: {short_name}", "#47f447")
+
+                # 新场景变化时插入任务队列
+                if short_name != self._last_queued_scene_name:
+                    self.task_added.emit(short_name, True)
+                    self.task_done.emit(short_name, True)
+                    self._last_queued_scene_name = short_name
+            else:
+                # 识别失败
+                self.scene_name_changed.emit("")
+
+            # 清理临时文件
             try:
-                import shutil
-                shutil.move(str(temp_path), str(unknown_path))
-            except Exception as e:
-                LogManager().append(f"[WARN] 移动文件失败: {e}")
-
-            self.scene_name_changed.emit("")
-            self.task_done.emit("识别场景", True)
-            self.task_done.emit("场景哈希索引", True)
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
         except Exception as e:
             import traceback
@@ -343,8 +322,6 @@ class ExecutionEngine(QObject):
             LogManager().append(err_msg)
             LogManager().append(traceback.format_exc())
             self.status_changed.emit(err_msg, "#f44747")
-            self.task_done.emit("识别场景", False)
-            self.task_done.emit("场景哈希索引", False)
 
     # ------------------------------------------------------------------
     # 辅助

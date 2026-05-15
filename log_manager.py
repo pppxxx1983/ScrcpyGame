@@ -1,12 +1,17 @@
+from __future__ import annotations
+
 import threading
 from collections import deque
+from typing import Optional
 
 
 class LogManager:
-    _instance = None
-    _init_lock = threading.Lock()
+    """Thread-safe singleton log manager."""
 
-    def __new__(cls):
+    _instance: Optional["LogManager"] = None
+    _init_lock: threading.Lock = threading.Lock()
+
+    def __new__(cls) -> "LogManager":
         if cls._instance is None:
             with cls._init_lock:
                 if cls._instance is None:
@@ -14,11 +19,11 @@ class LogManager:
                     cls._instance._init()
         return cls._instance
 
-    def _init(self):
-        self._deque = deque()
-        self._deque_lock = threading.Lock()
+    def _init(self) -> None:
+        self._deque: deque[str] = deque()
+        self._deque_lock: threading.Lock = threading.Lock()
 
-    def append(self, msg: str):
+    def append(self, msg: str) -> None:
         with self._deque_lock:
             self._deque.append(msg)
 
@@ -28,6 +33,14 @@ class LogManager:
             self._deque.clear()
             return items
 
-    def clear(self):
+    def clear(self) -> None:
         with self._deque_lock:
             self._deque.clear()
+
+    @classmethod
+    def reset_instance(cls) -> None:
+        """Reset singleton instance (useful for testing)."""
+        with cls._init_lock:
+            if cls._instance is not None:
+                cls._instance._deque.clear()
+            cls._instance = None

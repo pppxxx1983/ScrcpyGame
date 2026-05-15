@@ -520,23 +520,29 @@ class SceneIndex:
                     model_name TEXT NOT NULL DEFAULT '',
                     recognize_cost REAL NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    scene_level TEXT NOT NULL DEFAULT '',
+                    scene_state TEXT NOT NULL DEFAULT '',
+                    scene_context TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_scenes_dhash ON scenes(dhash)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_scenes_scene_key ON scenes(scene_key)")
-            # 兼容升级：旧表可能没有 model_name / recognize_cost / review_status / scene_type
             for col_def in [
                 ("model_name", "TEXT NOT NULL DEFAULT ''"),
                 ("recognize_cost", "REAL NOT NULL DEFAULT 0"),
                 ("review_status", "INTEGER NOT NULL DEFAULT 0"),
-                ("scene_type", "TEXT NOT NULL DEFAULT ''"),
+                ("scene_level", "TEXT NOT NULL DEFAULT ''"),
+                ("scene_state", "TEXT NOT NULL DEFAULT ''"),
+                ("scene_context", "TEXT NOT NULL DEFAULT ''"),
             ]:
                 try:
                     conn.execute(f"ALTER TABLE scenes ADD COLUMN {col_def[0]} {col_def[1]}")
                 except Exception:
                     pass
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_scenes_level ON scenes(scene_level)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_scenes_state ON scenes(scene_state)")
 
     def find_best(self, fingerprint: dict) -> dict | None:
         with self._connect() as conn:
@@ -773,3 +779,81 @@ if __name__ == "__main__":
 
     result = SceneIndex().ensure_scene(Path(args.image), threshold=args.threshold)
     print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+def update_scene_classification(scene_id: int, scene_level: str, scene_state: str = "", scene_context: str = "") -> bool:
+    """更新场景的分类信息"""
+    si = SceneIndex()
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    try:
+        with si._connect() as conn:
+            conn.execute(
+                "UPDATE scenes SET scene_level = ?, scene_state = ?, scene_context = ?, updated_at = ? WHERE id = ?",
+                (scene_level, scene_state, scene_context, now, scene_id),
+            )
+        return True
+    except Exception as e:
+        LogManager().append(f"[SceneIndex] update_scene_classification failed: {e}")
+        return False
+
+
+def get_scenes_by_level(scene_level: str) -> list[dict]:
+    """根据场景层级获取所有场景"""
+    si = SceneIndex()
+    try:
+        with si._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, scene_key, description, scene_level, scene_state, hits, created_at FROM scenes WHERE scene_level = ? ORDER BY hits DESC",
+                (scene_level,),
+            ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "scene_key": r[1],
+                "description": r[2],
+                "scene_level": r[3],
+                "scene_state": r[4],
+                "hits": r[5],
+                "created_at": r[6],
+            }
+            for r in rows
+        ]
+    except Exception as e:
+        LogManager().append(f"[SceneIndex] get_scenes_by_level failed: {e}")
+        return []
+
+
+def get_scene_classification_stats() -> dict:
+    """获取场景分类统计信息"""
+    si = SceneIndex()
+    stats = {
+        "by_level": {},
+        "by_state": {},
+        "total": 0,
+        "unclassified": 0,
+    }
+    try:
+        with si._connect() as conn:
+            rows = conn.execute(
+                "SELECT scene_level, scene_state, COUNT(*) as count FROM scenes GROUP BY scene_level, scene_state"
+            ).fetchall()
+
+            total = conn.execute("SELECT COUNT(*) FROM scenes").fetchone()[0]
+            unclassified = conn.execute(
+                "SELECT COUNT(*) FROM scenes WHERE scene_level = '' OR scene_level IS NULL"
+            ).fetchone()[0]
+
+            stats["total"] = total
+            stats["unclassified"] = unclassified
+
+            for row in rows:
+                level, state, count = row
+                if level not in stats["by_level"]:
+                    stats["by_level"][level] = {"total": 0, "states": {}}
+                stats["by_level"][level]["total"] += count
+                if state:
+                    stats["by_level"][level]["states"][state] = count
+    except Exception as e:
+        LogManager().append(f"[SceneIndex] get_scene_classification_stats failed: {e}")
+
+    return stats

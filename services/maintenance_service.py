@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import time
 from pathlib import Path
@@ -23,37 +24,60 @@ class MaintenanceServiceMixin:
             return
 
         try:
-            # 先停止 unknown 处理器，释放数据库和文件句柄
             self._unknown_processor.stop()
-            import time
-            time.sleep(0.5)
+            time.sleep(1.0)
 
-            # 1. 清理 screenshots
-            screenshot_dir = Path("screenshots")
-            if screenshot_dir.exists():
-                for item in screenshot_dir.iterdir():
-                    if item.is_file():
-                        item.unlink()
-                    elif item.is_dir():
-                        import shutil
-                        shutil.rmtree(item)
+            import gc
+            gc.collect()
 
-            # 2. 清理 game_agent_data
+            self._close_all_db_connections()
+
+            screenshots_dir = Path("screenshots")
+            if screenshots_dir.exists():
+                for item in list(screenshots_dir.iterdir()):
+                    try:
+                        if item.is_file():
+                            item.unlink()
+                        elif item.is_dir():
+                            shutil.rmtree(item, ignore_errors=True)
+                    except PermissionError:
+                        pass
+
             game_data_dir = Path("game_agent_data")
             if game_data_dir.exists():
-                import shutil
-                shutil.rmtree(game_data_dir)
+                for retry in range(3):
+                    try:
+                        shutil.rmtree(game_data_dir, ignore_errors=True)
+                        break
+                    except (OSError, PermissionError):
+                        time.sleep(0.5)
+                        gc.collect()
 
-            # 3. 重置 AgentDataManager 单例，让 ExecutionEngine 重新初始化数据库
+            for db_file in Path(".").glob("**/*.sqlite"):
+                try:
+                    os.chmod(db_file, 0o666)
+                    db_file.unlink(missing_ok=True)
+                except (OSError, PermissionError):
+                    pass
+
+            for wal_file in Path(".").glob("**/*.sqlite-wal"):
+                try:
+                    wal_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            for shm_file in Path(".").glob("**/*.sqlite-shm"):
+                try:
+                    shm_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
             from agent_data import AgentDataManager
             AgentDataManager._instance = None
             self.execution_engine.dm = AgentDataManager()
 
-            # 4. 重新创建 UnknownFolderProcessor（确保 SceneIndex 也是新的）
             self._unknown_processor = UnknownFolderProcessor(interval=5, allow_cloud_fallback=True)
             self._unknown_processor.start()
 
-            # 5. 刷新 UI
             self._refresh_events()
             self._refresh_audit_list()
 
@@ -62,4 +86,15 @@ class MaintenanceServiceMixin:
         except Exception as e:
             LogManager().append(f"[ClearDB] 清库失败: {e}")
             self._set_status(f"状态: 清库失败 - {e}")
+
+    def _close_all_db_connections(self):
+        """强制关闭所有可能的数据库连接。"""
+        import sqlite3
+        for db_file in Path(".").glob("**/*.sqlite"):
+            try:
+                conn = sqlite3.connect(str(db_file))
+                conn.execute("PRAGMA optimize")
+                conn.close()
+            except Exception:
+                pass
 
