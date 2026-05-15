@@ -24,6 +24,10 @@ class FrameCaptureMixin:
 
         import numpy as np
         rgb = np.ascontiguousarray(frame[..., ::-1])
+
+        # FPS 计数 +1
+        self._frame_flush_count += 1
+
         try:
             self.video_widget.set_frame(rgb)
         except RuntimeError:

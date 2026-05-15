@@ -447,27 +447,6 @@ class TransitionScene(BaseScene):
         return bool(self.dhash)
 
 
-class DesktopScene(BaseScene):
-    """桌面场景"""
-    LEVEL = SceneLevel.DESKTOP
-    DISPLAY_NAME = "桌面"
-
-    def classify_state(self) -> SceneState:
-        hash_patterns = {
-            "desktop_main": ["a0a0a0a0", "b0b0b0b0"],
-            "desktop_app": ["c0c0c0c0", "d0d0d0d0"],
-            "desktop_widget": ["e0e0e0e0", "f0f0f0f0"],
-        }
-        for state, patterns in hash_patterns.items():
-            for pattern in patterns:
-                if pattern in self.dhash.lower():
-                    return SceneState(f"DESKTOP_{state.upper()}")
-        return SceneState.DESKTOP_MAIN
-
-    def is_valid(self) -> bool:
-        return bool(self.dhash)
-
-
 class UnknownScene(BaseScene):
     """未知场景"""
     LEVEL = SceneLevel.UNKNOWN
@@ -496,7 +475,7 @@ class SceneFactory:
         SceneLevel.TUTORIAL: TutorialScene,
         SceneLevel.LOADING: LoadingScene,
         SceneLevel.TRANSITION: TransitionScene,
-        SceneLevel.DESKTOP: DesktopScene,
+        SceneLevel.DESKTOP: UnknownScene,  # 占位，文件末尾会替换为真正的 DesktopScene
         SceneLevel.UNKNOWN: UnknownScene,
     }
 
