@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from PySide6.QtGui import QPixmap, QPainter, QPen, QColor, QFont
+from PySide6.QtGui import QPixmap, QPainter, QPen, QColor, QFont, QImage
 from PySide6.QtCore import QTimer, Qt
 
 from log_manager import LogManager
@@ -78,6 +78,18 @@ class ExecutionPanelMixin:
         )
         # 任务队列初始为空，执行后动态添加
         panel_layout.addWidget(self.task_list, 1)  # stretch=1 让列表占据剩余空间
+
+        # 运动热力图显示
+        heatmap_title = QLabel("运动热力图")
+        heatmap_title.setStyleSheet("font-weight: bold; color: #888888; padding: 4px;")
+        panel_layout.addWidget(heatmap_title)
+
+        self.heatmap_label = QLabel("等待视频帧...")
+        self.heatmap_label.setStyleSheet("background-color: #1e1e1e; color: #888888;")
+        self.heatmap_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.heatmap_label.setMinimumHeight(120)
+        self.heatmap_label.setScaledContents(True)
+        panel_layout.addWidget(self.heatmap_label)
 
         layout.insertWidget(3, self.execution_panel)
         self.execution_panel.setVisible(False)
@@ -194,6 +206,24 @@ class ExecutionPanelMixin:
             )
         )
         item.setIcon(0, icon)
+
+    def _on_motion_heatmap(self, heatmap_rgb):
+        """接收运动热力图 numpy 数组并显示到 QLabel。"""
+        if heatmap_rgb is None or heatmap_rgb.size == 0:
+            return
+        try:
+            h, w, ch = heatmap_rgb.shape
+            bytes_per_line = ch * w
+            qimg = QImage(heatmap_rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
+            pixmap = QPixmap.fromImage(qimg).scaled(
+                self.heatmap_label.width(),
+                self.heatmap_label.height(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self.heatmap_label.setPixmap(pixmap)
+        except Exception:
+            pass
 
     def _draw_objects_on_pixmap(self, pixmap: QPixmap, objects: list) -> QPixmap:
         """在图片上绘制对象 bbox 和标签。"""

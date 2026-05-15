@@ -107,6 +107,7 @@ class MainWindow(
         self.execution_engine.task_cleared.connect(self._on_task_cleared)
         self.execution_engine.task_done.connect(self._on_task_done)
         self.execution_engine.scene_image_ready.connect(self._show_scene_image)
+        self.execution_engine.motion_heatmap_ready.connect(self._on_motion_heatmap)
 
         # 把 .ui 里的 videoWidget 替换为 VideoGLWidget
         old_widget = self.findChild(QWidget, "videoWidget")

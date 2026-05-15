@@ -18,6 +18,7 @@ from agent_data import AgentDataManager
 from log_manager import LogManager
 from analysis.scene_recognizer import SceneRecognizer
 from analysis.scene_classes import SceneLevel, SceneState, SceneFactory
+from analysis.motion_heatmap import MotionHeatmapAnalyzer
 
 # 触发 DesktopScene 注册到 SceneFactory（避免循环导入的延迟注册）
 import analysis.scene  # noqa: F401
@@ -41,6 +42,7 @@ class ExecutionEngine(QObject):
     task_done = Signal(str, bool)
     scene_image_ready = Signal(str, Path, list)   # text, image_path, objects
     scene_name_changed = Signal(str)                # 场景识别名字（空字符串表示清空）
+    motion_heatmap_ready = Signal(object)           # numpy ndarray (RGB heatmap)
 
     def __init__(self):
         super().__init__()
@@ -56,6 +58,7 @@ class ExecutionEngine(QObject):
         self._current_frame = None          # 最新视频帧，由 write_frame 更新
         self._recognize_thread = None       # 场景识别循环线程
         self._recognize_interval = 2.0      # 每隔 2 秒识别一次
+        self._motion_analyzer = MotionHeatmapAnalyzer()
         # 延迟后台预热 OCR 引擎，避免和主窗口初始化竞争 CPU
     # ------------------------------------------------------------------
     # Session / 录制 控制
@@ -141,6 +144,13 @@ class ExecutionEngine(QObject):
             import numpy as np
             # 与 video_widget 保持一致：BGR -> RGB
             self._current_frame = np.ascontiguousarray(frame[..., ::-1])
+
+        # 更新运动热力图
+        if self._current_frame is not None:
+            heatmap = self._motion_analyzer.update(self._current_frame)
+            if heatmap is not None:
+                self.motion_heatmap_ready.emit(heatmap)
+
         if self._video_writer is not None and frame is not None:
             now = time.perf_counter()
             min_interval = 1.0 / max(1, self._record_fps)
